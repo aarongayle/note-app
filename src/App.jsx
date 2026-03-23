@@ -17,7 +17,7 @@ export default function App() {
 
       <div className="flex-1 flex flex-col h-full min-w-0">
         {activeNoteId && (
-          <div className="flex items-center border-b border-border bg-surface">
+          <div className="flex min-w-0 items-center border-b border-border bg-surface">
             {!sidebarOpen && (
               <button
                 onClick={toggleSidebar}

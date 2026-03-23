@@ -7,6 +7,11 @@ import {
   useMemo,
 } from 'react'
 import useNotesStore, { PEN_TYPES } from '../stores/useNotesStore'
+import {
+  getDefaultNoteInputMode,
+  useDefaultNoteInputMode,
+  usePhoneClassViewport,
+} from '../lib/noteInputDefaults.js'
 import { renderStroke } from '../lib/drawing'
 import {
   strokeIntersectsLasso,
@@ -71,6 +76,8 @@ export default function Canvas() {
   const currentStrokeRef = useRef(null)
   const currentPathRef = useRef(null)
   const isDrawingRef = useRef(false)
+  /** Ignore stray pointer events (e.g. second finger during pinch) while drawing. */
+  const drawingPointerIdRef = useRef(null)
   /** @type {React.MutableRefObject<number[][] | null>} */
   const lassoDraftRef = useRef(null)
   /** @type {React.MutableRefObject<null | { kind: 'move' | 'rotate' | 'scale'; startX: number; startY: number; baseStrokes: unknown[]; indices: number[]; centerX: number; centerY: number; startDist: number; angle0: number }>} */
@@ -79,13 +86,15 @@ export default function Canvas() {
   const [selectedStrokeIndices, setSelectedStrokeIndices] = useState([])
   const [lassoDraftPoints, setLassoDraftPoints] = useState(null)
 
+  const defaultInputMode = useDefaultNoteInputMode()
+  const phoneClassViewport = usePhoneClassViewport()
   const note = useNotesStore((s) =>
     s.activeNoteId ? s.items[s.activeNoteId] : null
   )
   const inputMode = useNotesStore((s) => {
     const id = s.activeNoteId
-    if (!id) return 'stylus'
-    return s.noteInputModes[id] ?? 'stylus'
+    if (!id) return defaultInputMode
+    return s.noteInputModes[id] ?? defaultInputMode
   })
   const isKeyboard = inputMode === 'keyboard'
 
@@ -146,7 +155,7 @@ export default function Canvas() {
         cancelStrokeEraserGesture(prevId)
         cancelStrokesEditGesture(prevId)
         const modes = useNotesStore.getState().noteInputModes
-        if ((modes[prevId] ?? 'stylus') === 'keyboard') {
+        if ((modes[prevId] ?? getDefaultNoteInputMode()) === 'keyboard') {
           const prevNote = useNotesStore.getState().items[prevId]
           const text =
             prevNote?.type === 'note'
@@ -163,7 +172,7 @@ export default function Canvas() {
       cancelStrokeEraserGesture(prevId)
       cancelStrokesEditGesture(prevId)
       const modes = useNotesStore.getState().noteInputModes
-      if ((modes[prevId] ?? 'stylus') === 'keyboard') {
+      if ((modes[prevId] ?? getDefaultNoteInputMode()) === 'keyboard') {
         const prevNote = useNotesStore.getState().items[prevId]
         const text =
           prevNote?.type === 'note'
@@ -330,11 +339,13 @@ export default function Canvas() {
     (e) => {
       if (!note || isKeyboard) return
       if (e.button !== 0) return
-      if (e.pointerType === 'touch') return
+      // Pen/mouse always; touch only on phone-class viewports (see noteInputDefaults).
+      if (e.pointerType === 'touch' && !phoneClassViewport) return
 
       e.preventDefault()
       e.currentTarget.setPointerCapture(e.pointerId)
       isDrawingRef.current = true
+      drawingPointerIdRef.current = e.pointerId
 
       const point = getPointerPos(e)
       const pen = PEN_TYPES[activePen]
@@ -424,12 +435,14 @@ export default function Canvas() {
       cancelStrokeEraserGesture,
       beginStrokesEditGesture,
       selectedStrokeIndices,
+      phoneClassViewport,
     ]
   )
 
   const handlePointerMove = useCallback(
     (e) => {
       if (!isDrawingRef.current || !note || isKeyboard) return
+      if (e.pointerId !== drawingPointerIdRef.current) return
 
       e.preventDefault()
       const point = getPointerPos(e)
@@ -511,9 +524,17 @@ export default function Canvas() {
     ]
   )
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((e) => {
+    if (
+      e?.pointerId != null &&
+      drawingPointerIdRef.current != null &&
+      e.pointerId !== drawingPointerIdRef.current
+    ) {
+      return
+    }
     if (!isDrawingRef.current) return
     isDrawingRef.current = false
+    drawingPointerIdRef.current = null
 
     if (transformGestureRef.current && note) {
       transformGestureRef.current = null
@@ -800,6 +821,7 @@ export default function Canvas() {
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
             onPointerLeave={handlePointerUp}
           >
             {note.strokes.map((stroke, i) => (

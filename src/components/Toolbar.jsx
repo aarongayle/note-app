@@ -18,6 +18,7 @@ import useNotesStore, {
   NOTE_ZOOM_MIN,
   NOTE_ZOOM_MAX,
 } from '../stores/useNotesStore'
+import { useDefaultNoteInputMode } from '../lib/noteInputDefaults.js'
 
 const PEN_ICONS = {
   pen: Pen,
@@ -27,11 +28,12 @@ const PEN_ICONS = {
 }
 
 export default function Toolbar() {
+  const defaultInputMode = useDefaultNoteInputMode()
   const activeNoteId = useNotesStore((s) => s.activeNoteId)
   const inputMode = useNotesStore((s) => {
     const id = s.activeNoteId
-    if (!id) return 'stylus'
-    return s.noteInputModes[id] ?? 'stylus'
+    if (!id) return defaultInputMode
+    return s.noteInputModes[id] ?? defaultInputMode
   })
   const setNoteInputMode = useNotesStore((s) => s.setNoteInputMode)
 
@@ -65,160 +67,171 @@ export default function Toolbar() {
   const currentPen = PEN_TYPES[activePen]
   const isKeyboard = inputMode === 'keyboard'
 
+  const groupClass =
+    'flex shrink-0 items-center gap-0.5 border-r border-border pr-2 sm:pr-3'
+
   return (
-    <div className="h-12 flex items-center px-3 gap-3 flex-1">
-      {/* Stylus vs keyboard */}
-      {activeNoteId && (
-        <div className="flex items-center gap-0.5 border-r border-border pr-3">
-          <button
-            type="button"
-            onClick={() => setNoteInputMode(activeNoteId, 'stylus')}
-            title="Stylus — draw with pen"
-            className={`p-2 rounded-lg transition-colors ${
-              !isKeyboard
-                ? 'bg-accent/20 text-accent'
-                : 'text-text-secondary hover:bg-surface-lighter hover:text-text-primary'
-            }`}
-          >
-            <PenLine size={18} />
-          </button>
-          <button
-            type="button"
-            onClick={() => setNoteInputMode(activeNoteId, 'keyboard')}
-            title="Keyboard — type text"
-            className={`p-2 rounded-lg transition-colors ${
-              isKeyboard
-                ? 'bg-accent/20 text-accent'
-                : 'text-text-secondary hover:bg-surface-lighter hover:text-text-primary'
-            }`}
-          >
-            <Type size={18} />
-          </button>
-        </div>
-      )}
-
-      {activeNoteId && !isKeyboard && (
-        <div className="flex items-center gap-0.5 border-r border-border pr-3">
-          <button
-            type="button"
-            onClick={() => undoStylus(activeNoteId)}
-            disabled={!canUndoStylus}
-            title="Undo stroke"
-            className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
-          >
-            <Undo2 size={18} />
-          </button>
-          <button
-            type="button"
-            onClick={() => redoStylus(activeNoteId)}
-            disabled={!canRedoStylus}
-            title="Redo stroke"
-            className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
-          >
-            <Redo2 size={18} />
-          </button>
-        </div>
-      )}
-
-      {activeNoteId && (
-        <div className="flex items-center gap-0.5 border-r border-border pr-3">
-          <button
-            type="button"
-            onClick={() =>
-              zoomNoteBy(activeNoteId, 1 / NOTE_ZOOM_BUTTON_STEP)
-            }
-            disabled={noteZoom <= NOTE_ZOOM_MIN + 1e-6}
-            title="Zoom out"
-            className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
-          >
-            <ZoomOut size={18} />
-          </button>
-          <button
-            type="button"
-            onClick={() => zoomNoteBy(activeNoteId, NOTE_ZOOM_BUTTON_STEP)}
-            disabled={noteZoom >= NOTE_ZOOM_MAX - 1e-6}
-            title="Zoom in"
-            className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
-          >
-            <ZoomIn size={18} />
-          </button>
-        </div>
-      )}
-
-      {/* Pen tools */}
-      {!isKeyboard && (
-        <div className="flex items-center gap-1 border-r border-border pr-3">
-          {Object.values(PEN_TYPES).map((pen) => {
-            const Icon = PEN_ICONS[pen.id]
-            return (
-              <button
-                key={pen.id}
-                type="button"
-                onClick={() => {
-                  setActivePen(pen.id)
-                  if (!pen.isEraser && !pen.isLasso && pen.size)
-                    setPenSize(pen.size)
-                }}
-                title={pen.name}
-                className={`p-2 rounded-lg transition-colors ${
-                  activePen === pen.id
-                    ? 'bg-accent/20 text-accent'
-                    : 'text-text-secondary hover:bg-surface-lighter hover:text-text-primary'
-                }`}
-              >
-                <Icon size={18} />
-              </button>
-            )
-          })}
-        </div>
-      )}
-
-      {/* Size control */}
-      {!isKeyboard && !currentPen?.isEraser && !currentPen?.isLasso && (
-        <div className="flex items-center gap-1.5 border-r border-border pr-3">
-          <button
-            onClick={() => setPenSize(Math.max(1, penSize - 1))}
-            className="p-1 rounded text-text-muted hover:text-text-primary"
-          >
-            <Minus size={14} />
-          </button>
-          <div
-            className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-lighter"
-            title={`Size: ${penSize}`}
-          >
-            <div
-              className="rounded-full bg-current"
-              style={{
-                width: Math.min(penSize * 2, 20),
-                height: Math.min(penSize * 2, 20),
-                color: activeColor,
-              }}
-            />
-          </div>
-          <button
-            onClick={() => setPenSize(Math.min(50, penSize + 1))}
-            className="p-1 rounded text-text-muted hover:text-text-primary"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
-      )}
-
-      {/* Color palette */}
-      {!isKeyboard && !currentPen?.isEraser && !currentPen?.isLasso && (
-        <div className="flex items-center gap-1.5">
-          {colors.map((color) => (
+    <div className="flex min-w-0 flex-1 flex-col gap-1.5 py-1.5 pl-2 pr-2 sm:h-12 sm:flex-row sm:items-center sm:gap-3 sm:py-0 sm:pl-3 sm:pr-3">
+      {/* Row 1 (mobile): mode, undo/redo, zoom — on sm+ merges into one row with row 2 */}
+      <div
+        className={`flex min-w-0 flex-wrap items-center gap-2 sm:contents ${
+          !isKeyboard
+            ? 'border-b border-border pb-1.5 sm:border-0 sm:pb-0'
+            : ''
+        }`}
+      >
+        {activeNoteId && (
+          <div className={groupClass}>
             <button
-              key={color}
-              onClick={() => setActiveColor(color)}
-              className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${
-                activeColor === color
-                  ? 'border-accent scale-110'
-                  : 'border-transparent'
+              type="button"
+              onClick={() => setNoteInputMode(activeNoteId, 'stylus')}
+              title="Stylus — draw with pen"
+              className={`p-2 rounded-lg transition-colors ${
+                !isKeyboard
+                  ? 'bg-accent/20 text-accent'
+                  : 'text-text-secondary hover:bg-surface-lighter hover:text-text-primary'
               }`}
-              style={{ backgroundColor: color }}
-            />
-          ))}
+            >
+              <PenLine size={18} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setNoteInputMode(activeNoteId, 'keyboard')}
+              title="Keyboard — type text"
+              className={`p-2 rounded-lg transition-colors ${
+                isKeyboard
+                  ? 'bg-accent/20 text-accent'
+                  : 'text-text-secondary hover:bg-surface-lighter hover:text-text-primary'
+              }`}
+            >
+              <Type size={18} />
+            </button>
+          </div>
+        )}
+
+        {activeNoteId && !isKeyboard && (
+          <div className={groupClass}>
+            <button
+              type="button"
+              onClick={() => undoStylus(activeNoteId)}
+              disabled={!canUndoStylus}
+              title="Undo stroke"
+              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <Undo2 size={18} />
+            </button>
+            <button
+              type="button"
+              onClick={() => redoStylus(activeNoteId)}
+              disabled={!canRedoStylus}
+              title="Redo stroke"
+              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <Redo2 size={18} />
+            </button>
+          </div>
+        )}
+
+        {activeNoteId && (
+          <div className={groupClass}>
+            <button
+              type="button"
+              onClick={() =>
+                zoomNoteBy(activeNoteId, 1 / NOTE_ZOOM_BUTTON_STEP)
+              }
+              disabled={noteZoom <= NOTE_ZOOM_MIN + 1e-6}
+              title="Zoom out"
+              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <ZoomOut size={18} />
+            </button>
+            <button
+              type="button"
+              onClick={() => zoomNoteBy(activeNoteId, NOTE_ZOOM_BUTTON_STEP)}
+              disabled={noteZoom >= NOTE_ZOOM_MAX - 1e-6}
+              title="Zoom in"
+              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <ZoomIn size={18} />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Row 2 (mobile): drawing tools — hidden in keyboard mode */}
+      {!isKeyboard && (
+        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+          <div className="flex shrink-0 items-center gap-1 border-r border-border pr-2 sm:pr-3">
+            {Object.values(PEN_TYPES).map((pen) => {
+              const Icon = PEN_ICONS[pen.id]
+              return (
+                <button
+                  key={pen.id}
+                  type="button"
+                  onClick={() => {
+                    setActivePen(pen.id)
+                    if (!pen.isEraser && !pen.isLasso && pen.size)
+                      setPenSize(pen.size)
+                  }}
+                  title={pen.name}
+                  className={`p-2 rounded-lg transition-colors ${
+                    activePen === pen.id
+                      ? 'bg-accent/20 text-accent'
+                      : 'text-text-secondary hover:bg-surface-lighter hover:text-text-primary'
+                  }`}
+                >
+                  <Icon size={18} />
+                </button>
+              )
+            })}
+          </div>
+
+          {!currentPen?.isEraser && !currentPen?.isLasso && (
+            <div className="flex shrink-0 items-center gap-1.5 border-r border-border pr-2 sm:pr-3">
+              <button
+                onClick={() => setPenSize(Math.max(1, penSize - 1))}
+                className="p-1 rounded text-text-muted hover:text-text-primary"
+              >
+                <Minus size={14} />
+              </button>
+              <div
+                className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-lighter"
+                title={`Size: ${penSize}`}
+              >
+                <div
+                  className="rounded-full bg-current"
+                  style={{
+                    width: Math.min(penSize * 2, 20),
+                    height: Math.min(penSize * 2, 20),
+                    color: activeColor,
+                  }}
+                />
+              </div>
+              <button
+                onClick={() => setPenSize(Math.min(50, penSize + 1))}
+                className="p-1 rounded text-text-muted hover:text-text-primary"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+          )}
+
+          {!currentPen?.isEraser && !currentPen?.isLasso && (
+            <div className="flex shrink-0 items-center gap-1.5 pr-1">
+              {colors.map((color) => (
+                <button
+                  key={color}
+                  onClick={() => setActiveColor(color)}
+                  className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${
+                    activeColor === color
+                      ? 'border-accent scale-110'
+                      : 'border-transparent'
+                  }`}
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
