@@ -32,7 +32,6 @@ import {
   valueAndCaretForCanvasClick,
 } from '../lib/keyboardTextLayout.js'
 
-const SAVE_KEYBOARD_DEBOUNCE_MS = 400
 const TEXT_PAD_TOP_PX = 2
 
 /** @param {number} lineSpacingPx Scaled line / grid spacing */
@@ -69,7 +68,6 @@ export default function Canvas() {
   const svgRef = useRef(null)
   const textareaRef = useRef(null)
   const measureCanvasRef = useRef(null)
-  const keyboardSaveTimerRef = useRef(null)
   const currentStrokeRef = useRef(null)
   const currentPathRef = useRef(null)
   const isDrawingRef = useRef(false)
@@ -147,13 +145,14 @@ export default function Canvas() {
       if (prevId) {
         cancelStrokeEraserGesture(prevId)
         cancelStrokesEditGesture(prevId)
-        if (keyboardSaveTimerRef.current) {
-          clearTimeout(keyboardSaveTimerRef.current)
-          keyboardSaveTimerRef.current = null
-        }
         const modes = useNotesStore.getState().noteInputModes
         if ((modes[prevId] ?? 'stylus') === 'keyboard') {
-          setNoteKeyboardContent(prevId, draftTextRef.current)
+          const prevNote = useNotesStore.getState().items[prevId]
+          const text =
+            prevNote?.type === 'note'
+              ? joinTextBlocks(prevNote.textBlocks)
+              : draftTextRef.current
+          setNoteKeyboardContent(prevId, text)
         }
       }
       prevActiveNoteIdRef.current = null
@@ -163,13 +162,14 @@ export default function Canvas() {
     if (prevId && prevId !== note.id) {
       cancelStrokeEraserGesture(prevId)
       cancelStrokesEditGesture(prevId)
-      if (keyboardSaveTimerRef.current) {
-        clearTimeout(keyboardSaveTimerRef.current)
-        keyboardSaveTimerRef.current = null
-      }
       const modes = useNotesStore.getState().noteInputModes
       if ((modes[prevId] ?? 'stylus') === 'keyboard') {
-        setNoteKeyboardContent(prevId, draftTextRef.current)
+        const prevNote = useNotesStore.getState().items[prevId]
+        const text =
+          prevNote?.type === 'note'
+            ? joinTextBlocks(prevNote.textBlocks)
+            : draftTextRef.current
+        setNoteKeyboardContent(prevId, text)
       }
     }
     prevActiveNoteIdRef.current = note.id
@@ -212,20 +212,6 @@ export default function Canvas() {
   }, [activePen, note?.id, cancelStrokesEditGesture])
 
   useLayoutEffect(() => {
-    const ta = textareaRef.current
-    if (!ta) return
-    draftTextRef.current = ta.value
-  }, [isKeyboard, note?.id])
-
-  useEffect(() => {
-    return () => {
-      if (keyboardSaveTimerRef.current) {
-        clearTimeout(keyboardSaveTimerRef.current)
-      }
-    }
-  }, [])
-
-  useLayoutEffect(() => {
     const el = containerRef.current
     if (!el || !note) return
     const measure = () => setLayoutW(el.clientWidth)
@@ -257,29 +243,11 @@ export default function Canvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stable listener deps
   }, [note?.id, note?.scrollHeight, extendScrollHeight, isKeyboard, noteZoom])
 
-  const scheduleKeyboardPersist = useCallback(
-    (noteId, text) => {
-      if (keyboardSaveTimerRef.current) {
-        clearTimeout(keyboardSaveTimerRef.current)
-      }
-      keyboardSaveTimerRef.current = setTimeout(() => {
-        keyboardSaveTimerRef.current = null
-        setNoteKeyboardContent(noteId, text)
-      }, SAVE_KEYBOARD_DEBOUNCE_MS)
-    },
-    [setNoteKeyboardContent]
-  )
-
   const flushKeyboardPersist = useCallback(() => {
-    if (keyboardSaveTimerRef.current) {
-      clearTimeout(keyboardSaveTimerRef.current)
-      keyboardSaveTimerRef.current = null
-    }
-    if (note) {
-      const text = textareaRef.current?.value ?? draftTextRef.current
-      draftTextRef.current = text
-      setNoteKeyboardContent(note.id, text)
-    }
+    if (!note) return
+    const text = textareaRef.current?.value ?? draftTextRef.current
+    draftTextRef.current = text
+    setNoteKeyboardContent(note.id, text)
   }, [note, setNoteKeyboardContent])
 
   useEffect(() => {
@@ -290,10 +258,6 @@ export default function Canvas() {
     const prev = wasKeyboardRef.current
     wasKeyboardRef.current = isKeyboard
     if (prev && !isKeyboard) {
-      if (keyboardSaveTimerRef.current) {
-        clearTimeout(keyboardSaveTimerRef.current)
-        keyboardSaveTimerRef.current = null
-      }
       const text = textareaRef.current?.value ?? draftTextRef.current
       draftTextRef.current = text
       setNoteKeyboardContent(note.id, text)
@@ -596,10 +560,10 @@ export default function Canvas() {
     (e) => {
       const text = e.target.value
       draftTextRef.current = text
-      scheduleKeyboardPersist(note.id, text)
+      setNoteKeyboardContent(note.id, text)
       requestAnimationFrame(adjustTextLayerHeight)
     },
-    [note, scheduleKeyboardPersist, adjustTextLayerHeight]
+    [note, setNoteKeyboardContent, adjustTextLayerHeight]
   )
 
   const handleKeyboardBlur = useCallback(() => {
@@ -647,9 +611,8 @@ export default function Canvas() {
         }
       )
       if (nextValue !== ta.value) {
-        ta.value = nextValue
         draftTextRef.current = nextValue
-        scheduleKeyboardPersist(note.id, nextValue)
+        setNoteKeyboardContent(note.id, nextValue)
       }
       requestAnimationFrame(() => {
         ta.setSelectionRange(index, index)
@@ -660,7 +623,7 @@ export default function Canvas() {
       isKeyboard,
       getMeasureCtx,
       adjustTextLayerHeight,
-      scheduleKeyboardPersist,
+      setNoteKeyboardContent,
       note?.id,
     ]
   )
@@ -807,7 +770,7 @@ export default function Canvas() {
             key={note.id}
             ref={textareaRef}
             readOnly={!isKeyboard}
-            defaultValue={joinTextBlocks(note.textBlocks)}
+            value={joinTextBlocks(note.textBlocks)}
             onChange={handleKeyboardChange}
             onPointerDown={handleTextAreaPointerDown}
             onBlur={handleKeyboardBlur}
