@@ -1,0 +1,44 @@
+diff --git a/dist/react/client.js b/dist/react/client.js
+index 818636ce0729004ac3c61e45b491f8b53695046a..1ef4d9b52883020b663f124505b39ec847bf386c 100644
+--- a/dist/react/client.js
++++ b/dist/react/client.js
+@@ -261,8 +261,16 @@ export function AuthProvider({ client, serverState, onChange, shouldHandleCode,
+             url.searchParams.delete("code");
+             void (async () => {
+                 await replaceURL(url.pathname + url.search + url.hash);
+-                await signIn(undefined, { code });
+-                signingInWithCodeFromURL.current = false;
++                try {
++                    await signIn(undefined, { code });
++                }
++                catch {
++                    // signIn can throw (e.g. allowlist); otherwise isLoading stays true forever.
++                    await readStateFromStorage();
++                }
++                finally {
++                    signingInWithCodeFromURL.current = false;
++                }
+             })();
+         }
+         else {
+diff --git a/src/react/client.tsx b/src/react/client.tsx
+index 81a869f7bf301687483b4504fd05f481000ce4d1..ed75f2a5978ea445497e5a62d755ada5984ca944 100644
+--- a/src/react/client.tsx
++++ b/src/react/client.tsx
+@@ -382,8 +382,14 @@ export function AuthProvider({
+         url.searchParams.delete("code");
+         void (async () => {
+           await replaceURL(url.pathname + url.search + url.hash);
+-          await signIn(undefined, { code });
+-          signingInWithCodeFromURL.current = false;
++          try {
++            await signIn(undefined, { code });
++          } catch {
++            // signIn can throw (e.g. allowlist); otherwise isLoading stays true forever.
++            await readStateFromStorage();
++          } finally {
++            signingInWithCodeFromURL.current = false;
++          }
+         })();
+       } else {
+         void readStateFromStorage();

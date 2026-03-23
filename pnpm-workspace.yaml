@@ -1,0 +1,2 @@
+patchedDependencies:
+  '@convex-dev/auth@0.0.91': patches/@convex-dev__auth@0.0.91.patch
