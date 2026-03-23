@@ -1,7 +1,6 @@
 import {
   Pen,
   PenLine,
-  Pencil,
   Highlighter,
   Eraser,
   LassoSelect,
@@ -22,7 +21,6 @@ import useNotesStore, {
 
 const PEN_ICONS = {
   pen: Pen,
-  pencil: Pencil,
   marker: Highlighter,
   eraser: Eraser,
   lasso: LassoSelect,

@@ -21,16 +21,6 @@ export const PEN_TYPES = {
     streamline: 0.5,
     color: '#000000',
   },
-  pencil: {
-    id: 'pencil',
-    name: 'Pencil',
-    icon: 'Pencil',
-    size: 2,
-    thinning: 0.6,
-    smoothing: 0.3,
-    streamline: 0.3,
-    color: '#333333',
-  },
   marker: {
     id: 'marker',
     name: 'Marker',
@@ -122,18 +112,72 @@ const useNotesStore = create((set, get) => ({
   /** @type {Record<string, { prev: unknown[]; next: unknown[] }[]>} */
   stylusRedoStacks: {},
 
-  hydrateFromServer: ({ items, rootIds }) =>
-    set((state) => ({
-      items,
-      rootIds,
-      isTreeReady: true,
-      activeNoteId:
-        state.activeNoteId && items[state.activeNoteId]
-          ? state.activeNoteId
-          : null,
-      stylusUndoStacks: {},
-      stylusRedoStacks: {},
-    })),
+  hydrateFromServer: ({ items: serverItems, rootIds: serverRootIds }) =>
+    set((state) => {
+      const mergedItems = { ...serverItems }
+
+      // Optimistic creates (and any id not yet in listForUser) must survive hydrates.
+      for (const [id, localItem] of Object.entries(state.items)) {
+        if (!(id in serverItems)) {
+          mergedItems[id] = localItem
+        }
+      }
+
+      // Stale subscription snapshots can arrive before debounced save lands; never clobber
+      // newer local note bodies with older server data.
+      for (const [id, localItem] of Object.entries(state.items)) {
+        const srv = serverItems[id]
+        if (
+          localItem?.type === 'note' &&
+          srv?.type === 'note' &&
+          (localItem.updatedAt ?? 0) > (srv.updatedAt ?? 0)
+        ) {
+          mergedItems[id] = localItem
+        }
+      }
+
+      for (const [id, item] of Object.entries(mergedItems)) {
+        if (id in serverItems || !item?.parentId) continue
+        const parent = mergedItems[item.parentId]
+        if (parent?.type === 'folder' && !parent.childIds.includes(id)) {
+          mergedItems[item.parentId] = {
+            ...parent,
+            childIds: [...parent.childIds, id],
+          }
+        }
+      }
+
+      const mergedRootIds = [...serverRootIds]
+      for (const id of state.rootIds) {
+        if (
+          !mergedRootIds.includes(id) &&
+          mergedItems[id]?.parentId == null
+        ) {
+          mergedRootIds.push(id)
+        }
+      }
+
+      /** Keep local undo/redo; Convex does not store them. Server echo would otherwise clear stacks after each save. */
+      const pruneStacks = (stacks) => {
+        const next = {}
+        for (const [id, stack] of Object.entries(stacks)) {
+          if (mergedItems[id]?.type === 'note') next[id] = stack
+        }
+        return next
+      }
+
+      return {
+        items: mergedItems,
+        rootIds: mergedRootIds,
+        isTreeReady: true,
+        activeNoteId:
+          state.activeNoteId && mergedItems[state.activeNoteId]
+            ? state.activeNoteId
+            : null,
+        stylusUndoStacks: pruneStacks(state.stylusUndoStacks),
+        stylusRedoStacks: pruneStacks(state.stylusRedoStacks),
+      }
+    }),
 
   createFolder: (name, parentId = null) => {
     const id = uuidv4()
@@ -632,10 +676,15 @@ const useNotesStore = create((set, get) => ({
     persistence?.scheduleNoteSave?.(noteId)
   },
 
-  setActivePen: (penId) => set({ activePen: penId }),
+  setActivePen: (penId) =>
+    set({ activePen: PEN_TYPES[penId] ? penId : 'pen' }),
   setActiveColor: (color) => set({ activeColor: color }),
   setPenSize: (size) => set({ penSize: size }),
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
 }))
+
+if (!PEN_TYPES[useNotesStore.getState().activePen]) {
+  useNotesStore.setState({ activePen: 'pen' })
+}
 
 export default useNotesStore
