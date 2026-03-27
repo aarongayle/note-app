@@ -43,11 +43,7 @@ import EpubNoteBackground from './EpubNoteBackground.jsx'
 import ImageEmbedsLayer from './ImageEmbedsLayer.jsx'
 import TextBoxesLayer from './TextBoxesLayer.jsx'
 
-/**
- * Module-level cache of scroll positions per note, so toggling split view
- * (which unmounts/remounts Canvas) can restore where the user was.
- */
-const scrollPositionCache = new Map()
+import { scrollPositionCache } from '../lib/scrollPositionCache.js'
 
 /** Ray-casting point-in-polygon test for lasso hit detection. */
 function pointInPolygon(px, py, polygon) {
@@ -420,15 +416,17 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   }, [note?.id, syncScrollExtent])
 
   // Restore scroll position before first paint after remount (e.g. split-view
-  // toggle). The spacer div already has the correct min-height from
-  // note.scrollHeight, so the container can accept the saved scrollTop even
-  // before child effects populate EPUB / PDF content.
+  // toggle or page refresh). Prefer the in-memory cache (exact physical
+  // scrollTop from this session); fall back to the persisted logical Y
+  // stored on the note (survives page refresh / device switch).
   useLayoutEffect(() => {
     const container = containerRef.current
     if (!container || !note?.id) return
-    const saved = scrollPositionCache.get(note.id)
-    if (saved != null && saved > 0) {
-      container.scrollTop = saved
+    const cached = scrollPositionCache.get(note.id)
+    if (cached != null && cached > 0) {
+      container.scrollTop = cached
+    } else if (note.lastScrollY != null && note.lastScrollY > 0) {
+      container.scrollTop = note.lastScrollY * noteZoom
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- restore only on mount for this note
   }, [note?.id])
@@ -1164,6 +1162,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   return (
     <div
       ref={containerRef}
+      data-note-scroll={note?.id}
       className="flex-1 min-h-0 overflow-y-auto overflow-x-auto relative bg-canvas-bg min-w-0 touch-pan-x touch-pan-y"
     >
       <div className="relative min-w-0" style={spacerStyle}>

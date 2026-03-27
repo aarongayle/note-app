@@ -6,6 +6,7 @@ import {
   MIN_NOTE_SCROLL_HEIGHT,
   persistedScrollHeightForNote,
 } from '../lib/noteScrollBounds.js'
+import { scrollPositionCache } from '../lib/scrollPositionCache.js'
 import useNotesStore, {
   clearNotesPersistence,
   configureNotesPersistence,
@@ -39,6 +40,12 @@ function buildUpdateNotePayload(note) {
     pdfBackgroundFileId: note.pdfBackgroundFileId ?? null,
     epubBackgroundFileId: note.epubBackgroundFileId ?? null,
     epubContentWidth: note.epubContentWidth ?? null,
+    bookmarkY: note.bookmarkY ?? null,
+    lastScrollY: (() => {
+      const phys = scrollPositionCache.get(note.id)
+      if (phys != null) return phys / (note.zoom ?? 1)
+      return note.lastScrollY ?? null
+    })(),
     scrollHeight: persistedScrollHeightForNote(note),
     zoom: clampZoomForServer(note.zoom ?? 1),
     updatedAt: note.updatedAt,
@@ -89,6 +96,8 @@ function rowsToStoreState(rows) {
         importEpubMarginPt: row.importEpubMargins
           ? undefined
           : row.importEpubMarginPt,
+        bookmarkY: row.bookmarkY,
+        lastScrollY: row.lastScrollY,
         scrollHeight: row.scrollHeight ?? MIN_NOTE_SCROLL_HEIGHT,
         zoom: row.zoom ?? 1,
         createdAt: row.createdAt,

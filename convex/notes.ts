@@ -301,6 +301,8 @@ export const updateNote = mutation({
     pdfBackgroundFileId: v.union(v.null(), v.id("files")),
     epubBackgroundFileId: v.union(v.null(), v.id("files")),
     epubContentWidth: v.union(v.null(), v.number()),
+    bookmarkY: v.union(v.null(), v.number()),
+    lastScrollY: v.union(v.null(), v.number()),
     scrollHeight: v.number(),
     zoom: v.number(),
     updatedAt: v.number(),
@@ -367,6 +369,8 @@ export const updateNote = mutation({
           : args.epubContentWidth != null
             ? Math.min(EPUB_WIDTH_MAX, Math.max(EPUB_WIDTH_MIN, args.epubContentWidth))
             : undefined,
+      bookmarkY: args.bookmarkY === null ? undefined : args.bookmarkY,
+      lastScrollY: args.lastScrollY === null ? undefined : args.lastScrollY,
       scrollHeight: args.scrollHeight,
       zoom: z,
       updatedAt: args.updatedAt,

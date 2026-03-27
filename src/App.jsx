@@ -25,7 +25,7 @@ export default function App() {
       {sidebarOpen && <Sidebar />}
 
       <div className="flex-1 flex flex-col h-full min-h-0 min-w-0">
-        {activeNoteId && (
+        {activeNoteId && !showSplitView && (
           <div className="flex min-w-0 items-center border-b border-border bg-surface">
             {!sidebarOpen && (
               <button
@@ -36,6 +36,16 @@ export default function App() {
               </button>
             )}
             <Toolbar />
+          </div>
+        )}
+        {activeNoteId && showSplitView && !sidebarOpen && (
+          <div className="bg-surface border-b border-border">
+            <button
+              onClick={toggleSidebar}
+              className="p-2.5 text-text-muted hover:text-text-primary transition-colors"
+            >
+              <PanelLeftOpen size={18} />
+            </button>
           </div>
         )}
         {!activeNoteId && !sidebarOpen && (

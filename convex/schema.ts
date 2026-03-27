@@ -81,6 +81,10 @@ export default defineSchema({
         left: v.number(),
       }),
     ),
+    /** Logical Y position (pre-zoom) of a single user bookmark. */
+    bookmarkY: v.optional(v.number()),
+    /** Last logical scroll Y so the user returns to their reading position. */
+    lastScrollY: v.optional(v.number()),
     scrollHeight: v.optional(v.number()),
     /** View zoom (1 = 100%), clamped client-side to ~0.5–3 */
     zoom: v.optional(v.number()),

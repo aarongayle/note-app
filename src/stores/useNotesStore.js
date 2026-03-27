@@ -936,6 +936,33 @@ const useNotesStore = create((set, get) => ({
     persistence?.scheduleNoteSave?.(noteId)
   },
 
+  setNoteBookmark: (noteId, logicalY) => {
+    const state = useNotesStore.getState()
+    const note = state.items[noteId]
+    if (!note || note.type !== 'note') return
+    set({
+      items: {
+        ...state.items,
+        [noteId]: { ...note, bookmarkY: logicalY, updatedAt: Date.now() },
+      },
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
+  clearNoteBookmark: (noteId) => {
+    const state = useNotesStore.getState()
+    const note = state.items[noteId]
+    if (!note || note.type !== 'note') return
+    if (note.bookmarkY == null) return
+    set({
+      items: {
+        ...state.items,
+        [noteId]: { ...note, bookmarkY: undefined, updatedAt: Date.now() },
+      },
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
   setNoteKeyboardContent: (noteId, content) => {
     set((state) => {
       const note = state.items[noteId]
