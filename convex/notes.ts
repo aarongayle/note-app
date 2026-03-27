@@ -31,7 +31,16 @@ const textBoxValidator = v.object({
   y: v.number(),
   width: v.number(),
   content: v.string(),
+  rotation: v.optional(v.number()),
+  size: v.optional(v.union(v.literal("small"), v.literal("medium"), v.literal("large"))),
 });
+
+const noteTemplateValidator = v.union(
+  v.literal("blank"),
+  v.literal("lined"),
+  v.literal("grid"),
+  v.literal("dotted"),
+);
 
 const importEpubMarginsValidator = v.object({
   top: v.number(),
@@ -287,6 +296,104 @@ export const renameItem = mutation({
   },
 });
 
+/** Sibling order follows sortIndex only so drag-and-drop order is preserved. */
+function sortRowsByOrder(
+  a: { sortIndex: number; createdAt: number },
+  b: { sortIndex: number; createdAt: number },
+): number {
+  if (a.sortIndex !== b.sortIndex) return a.sortIndex - b.sortIndex;
+  return a.createdAt - b.createdAt;
+}
+
+export const moveItem = mutation({
+  args: {
+    clientId: v.string(),
+    newParentClientId: v.union(v.null(), v.string()),
+    newIndex: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const { userId } = await requireAllowedUser(ctx);
+    await assertParentBelongsToUser(ctx, userId, args.newParentClientId);
+
+    const all = await ctx.db
+      .query("noteItems")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+
+    const byClientId = new Map(all.map((r) => [r.clientId, r]));
+    const row = byClientId.get(args.clientId);
+    if (row === undefined) {
+      throw new ConvexError("Item not found.");
+    }
+
+    if (args.newParentClientId !== null) {
+      if (row.itemType === "folder") {
+        if (args.newParentClientId === args.clientId) {
+          throw new ConvexError("Cannot move a folder into itself.");
+        }
+        const descendants = new Set<string>();
+        const walk = (root: string) => {
+          for (const r of all) {
+            if (r.parentClientId === root) {
+              descendants.add(r.clientId);
+              walk(r.clientId);
+            }
+          }
+        };
+        walk(args.clientId);
+        if (descendants.has(args.newParentClientId)) {
+          throw new ConvexError("Cannot move a folder into its descendants.");
+        }
+      }
+    }
+
+    const oldParent = row.parentClientId;
+    const newParent = args.newParentClientId;
+    let newIndex = Number.isFinite(args.newIndex)
+      ? Math.max(0, Math.floor(args.newIndex))
+      : 0;
+
+    const sortedChildren = (parent: string | null) =>
+      all
+        .filter((r) => r.parentClientId === parent)
+        .sort(sortRowsByOrder)
+        .map((r) => r.clientId);
+
+    if (oldParent === newParent) {
+      const list = sortedChildren(newParent).filter((id) => id !== args.clientId);
+      newIndex = Math.min(newIndex, list.length);
+      list.splice(newIndex, 0, args.clientId);
+      for (let i = 0; i < list.length; i++) {
+        const r = byClientId.get(list[i]);
+        if (r === undefined) continue;
+        await ctx.db.patch(r._id, {
+          sortIndex: i,
+          parentClientId: newParent,
+        });
+      }
+      return;
+    }
+
+    const oldList = sortedChildren(oldParent).filter((id) => id !== args.clientId);
+    for (let i = 0; i < oldList.length; i++) {
+      const r = byClientId.get(oldList[i]);
+      if (r === undefined) continue;
+      await ctx.db.patch(r._id, { sortIndex: i });
+    }
+
+    const newList = sortedChildren(newParent).filter((id) => id !== args.clientId);
+    newIndex = Math.min(newIndex, newList.length);
+    newList.splice(newIndex, 0, args.clientId);
+    for (let i = 0; i < newList.length; i++) {
+      const r = byClientId.get(newList[i]);
+      if (r === undefined) continue;
+      await ctx.db.patch(r._id, {
+        sortIndex: i,
+        parentClientId: newParent,
+      });
+    }
+  },
+});
 
 export const updateNote = mutation({
   args: {
@@ -301,6 +408,7 @@ export const updateNote = mutation({
     bookmarkY: v.union(v.null(), v.number()),
     scrollHeight: v.number(),
     updatedAt: v.number(),
+    template: noteTemplateValidator,
     importDocFontSizePt: v.number(),
     importEpubMarginPt: v.union(v.null(), v.number()),
     importEpubMargins: v.union(v.null(), importEpubMarginsValidator),
@@ -368,6 +476,7 @@ export const updateNote = mutation({
       bookmarkY: args.bookmarkY === null ? undefined : args.bookmarkY,
       scrollHeight: args.scrollHeight,
       updatedAt: args.updatedAt,
+      template: args.template,
       importDocFontSizePt: fontPt,
       importEpubMargins: nextEpubMargins,
       importEpubMarginPt: nextEpubMarginPt,

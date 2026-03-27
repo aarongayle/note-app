@@ -11,6 +11,7 @@ import { textBoxHasVisibleContent } from '../lib/textBoxContent.js'
 import useNotesStore, {
   clearNotesPersistence,
   configureNotesPersistence,
+  TEMPLATES,
 } from '../stores/useNotesStore'
 
 const SAVE_DEBOUNCE_MS = 450
@@ -31,6 +32,8 @@ function buildUpdateNotePayload(note) {
         y: b.y,
         width: b.width,
         content: b.content.trim(),
+        ...(b.rotation != null && { rotation: b.rotation }),
+        ...(b.size && b.size !== 'medium' && { size: b.size }),
       })),
     imageEmbeds: note.imageEmbeds ?? [],
     pdfBackgroundFileId: note.pdfBackgroundFileId ?? null,
@@ -39,6 +42,8 @@ function buildUpdateNotePayload(note) {
     bookmarkY: note.bookmarkY ?? null,
     scrollHeight: persistedScrollHeightForNote(note),
     updatedAt: note.updatedAt,
+    template:
+      note.template && TEMPLATES[note.template] ? note.template : 'blank',
     importDocFontSizePt: note.importDocFontSizePt ?? KEYBOARD_FONT_SIZE_PX,
     importEpubMarginPt: note.importEpubMarginPt ?? null,
     importEpubMargins: note.importEpubMargins ?? null,
@@ -105,8 +110,6 @@ function rowsToStoreState(rows) {
   }
 
   const siblingSort = (a, b) => {
-    if (a.itemType === 'folder' && b.itemType !== 'folder') return -1
-    if (a.itemType !== 'folder' && b.itemType === 'folder') return 1
     if (a.sortIndex !== b.sortIndex) return a.sortIndex - b.sortIndex
     return a.createdAt - b.createdAt
   }
@@ -136,12 +139,14 @@ export default function NotesConvexSync() {
   const createNoteMutation = useMutation(api.notes.createNote)
   const deleteItemMutation = useMutation(api.notes.deleteItem)
   const renameItemMutation = useMutation(api.notes.renameItem)
+  const moveItemMutation = useMutation(api.notes.moveItem)
   const updateNoteMutation = useMutation(api.notes.updateNote)
 
   const createFolderMutationRef = useRef(createFolderMutation)
   const createNoteMutationRef = useRef(createNoteMutation)
   const deleteItemMutationRef = useRef(deleteItemMutation)
   const renameItemMutationRef = useRef(renameItemMutation)
+  const moveItemMutationRef = useRef(moveItemMutation)
   const updateNoteMutationRef = useRef(updateNoteMutation)
 
   useEffect(() => {
@@ -149,12 +154,14 @@ export default function NotesConvexSync() {
     createNoteMutationRef.current = createNoteMutation
     deleteItemMutationRef.current = deleteItemMutation
     renameItemMutationRef.current = renameItemMutation
+    moveItemMutationRef.current = moveItemMutation
     updateNoteMutationRef.current = updateNoteMutation
   }, [
     createFolderMutation,
     createNoteMutation,
     deleteItemMutation,
     renameItemMutation,
+    moveItemMutation,
     updateNoteMutation,
   ])
 
@@ -183,6 +190,9 @@ export default function NotesConvexSync() {
       },
       onRenameItem: ({ clientId, name }) => {
         void renameItemMutationRef.current({ clientId, name })
+      },
+      onMoveItem: (args) => {
+        void moveItemMutationRef.current(args)
       },
       scheduleNoteSave,
     })

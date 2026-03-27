@@ -160,6 +160,8 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   const [selectedImageEmbedId, setSelectedImageEmbedId] = useState(null)
   const [selectedTextBoxIds, setSelectedTextBoxIds] = useState([])
   const [editingTextBoxId, setEditingTextBoxId] = useState(null)
+  /** Set to true when a textbox blur just transitioned to chrome state; consumed by handlePaperPointerDown. */
+  const justBlurredToChrome = useRef(false)
   /** Heights reported by TextBoxesLayer — used for SVG chrome placement. */
   const textBoxHeightsRef = useRef({})
   const [lassoDraftPoints, setLassoDraftPoints] = useState(null)
@@ -182,7 +184,8 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   const isSelect = inputMode === 'select'
 
   const activePen = useNotesStore((s) => s.activePen)
-  const activeColor = useNotesStore((s) => s.activeColor)
+  const penColor = useNotesStore((s) => s.penColor)
+  const highlighterColor = useNotesStore((s) => s.highlighterColor)
   const penSize = useNotesStore((s) => s.penSize)
   const addStroke = useNotesStore((s) => s.addStroke)
   const eraseStrokesAt = useNotesStore((s) => s.eraseStrokesAt)
@@ -223,6 +226,10 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   const createTextBox = useNotesStore((s) => s.createTextBox)
   const updateTextBox = useNotesStore((s) => s.updateTextBox)
   const deleteTextBox = useNotesStore((s) => s.deleteTextBox)
+  const textSize = useNotesStore((s) => s.textSize)
+  const setEditingTextBoxRef = useNotesStore((s) => s.setEditingTextBoxRef)
+  const clearEditingTextBoxRef = useNotesStore((s) => s.clearEditingTextBoxRef)
+  const syncTextSizeFromTextBox = useNotesStore((s) => s.syncTextSizeFromTextBox)
   // Delete selected textboxes when the Delete/Backspace key is pressed while
   // the lasso tool is active and no textbox textarea is focused.
   useEffect(() => {
@@ -230,7 +237,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     const onKeyDown = (e) => {
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTextBoxIds.length > 0) {
         const active = document.activeElement
-        if (active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT')) return
+        if (active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' || active.isContentEditable)) return
         for (const id of selectedTextBoxIds) {
           deleteTextBox(note.id, id)
         }
@@ -895,7 +902,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
       }
 
       const hasPressure = e.pressure > 0 && e.pressure < 1
-      const color = pen.id === 'marker' ? pen.color : activeColor
+      const color = activePen === 'marker' ? highlighterColor : penColor
       const strokeOptions = {
         size: pen.id === 'marker' ? pen.size : penSize,
         thinning: pen.thinning,
@@ -928,7 +935,8 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
       isKeyboard,
       isSelect,
       activePen,
-      activeColor,
+      penColor,
+      highlighterColor,
       penSize,
       getPointerPos,
       eraseStrokesAt,
@@ -1312,16 +1320,19 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
    * If the currently-editing textbox has no content, delete it.
    * Called before switching to a different textbox or leaving edit mode.
    */
+  /** @returns {boolean} true if the box was empty and deleted */
   const cleanUpEmptyEditingTextBox = useCallback(
     (currentEditingId) => {
-      if (!currentEditingId || !note) return
+      if (!currentEditingId || !note) return false
       const noteState = useNotesStore.getState().items[note.id]
       const box = noteState?.textBoxes?.find((b) => b.id === currentEditingId)
       if (box && !box.content.trim()) {
         deleteTextBox(note.id, currentEditingId)
         setEditingTextBoxId(null)
         setSelectedTextBoxIds((prev) => prev.filter((sid) => sid !== currentEditingId))
+        return true
       }
+      return false
     },
     [note, deleteTextBox]
   )
@@ -1332,9 +1343,17 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
       if (editingTextBoxId && editingTextBoxId !== id) {
         cleanUpEmptyEditingTextBox(editingTextBoxId)
       }
+      setSelectedTextBoxIds([id])
+      setSelectedImageEmbedId(null)
+      setSelectedStrokeIndices([])
       setEditingTextBoxId(id)
+      if (note) {
+        setEditingTextBoxRef(note.id, id)
+        const tb = (note.textBoxes ?? []).find((b) => b.id === id)
+        if (tb) syncTextSizeFromTextBox(tb)
+      }
     },
-    [editingTextBoxId, cleanUpEmptyEditingTextBox]
+    [editingTextBoxId, cleanUpEmptyEditingTextBox, note, setEditingTextBoxRef, syncTextSizeFromTextBox]
   )
 
   /** Select tool: click in text body focuses for typing without changing toolbar mode. */
@@ -1342,17 +1361,34 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     (textBoxId) => {
       if (!note) return
       bumpToolbarToThisPane()
+      if (editingTextBoxId && editingTextBoxId !== textBoxId) {
+        cleanUpEmptyEditingTextBox(editingTextBoxId)
+      }
+      setSelectedTextBoxIds([textBoxId])
+      setSelectedImageEmbedId(null)
+      setSelectedStrokeIndices([])
       handleStartEditTextBox(textBoxId)
     },
-    [note, bumpToolbarToThisPane, handleStartEditTextBox]
+    [note, bumpToolbarToThisPane, editingTextBoxId, cleanUpEmptyEditingTextBox, handleStartEditTextBox],
   )
 
   const handleTextBoxEditBlur = useCallback(
     (id) => {
-      cleanUpEmptyEditingTextBox(id)
+      const wasDeleted = cleanUpEmptyEditingTextBox(id)
       setEditingTextBoxId((prev) => (prev === id ? null : prev))
+      clearEditingTextBoxRef()
+      if (isSelect || wasDeleted) {
+        // Select mode: blur fully deselects.
+        setSelectedTextBoxIds((prev) => prev.filter((sid) => sid !== id))
+      } else {
+        // Text mode: keep selected → shows chrome (move/delete/resize).
+        // Flag so the pointerDown from this same click doesn't immediately deselect.
+        // Clear it after a tick so only the co-occurring pointerDown is suppressed.
+        justBlurredToChrome.current = true
+        requestAnimationFrame(() => { justBlurredToChrome.current = false })
+      }
     },
-    [cleanUpEmptyEditingTextBox]
+    [isSelect, cleanUpEmptyEditingTextBox, clearEditingTextBoxRef]
   )
 
   /**
@@ -1364,20 +1400,31 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     (e) => {
       if (!isSelect || !note) return
       if (e.button !== 0) return
-      if (e.target !== e.currentTarget) return
       bumpToolbarToThisPane()
-      cleanUpEmptyEditingTextBox(editingTextBoxId)
-      setEditingTextBoxId(null)
-      setSelectedImageEmbedId(null)
-      setSelectedTextBoxIds([])
-      setSelectedStrokeIndices([])
+
+      // Always clear textbox selection/editing when clicking on the pane,
+      // even if the target is a child (e.g. image embed polygon).
+      if (selectedTextBoxIds.length > 0 || editingTextBoxId) {
+        cleanUpEmptyEditingTextBox(editingTextBoxId)
+        setEditingTextBoxId(null)
+        setSelectedTextBoxIds([])
+        clearEditingTextBoxRef()
+      }
+
+      // Only clear other selections when clicking empty canvas directly.
+      if (e.target === e.currentTarget) {
+        setSelectedImageEmbedId(null)
+        setSelectedStrokeIndices([])
+      }
     },
     [
       isSelect,
       note,
       bumpToolbarToThisPane,
       editingTextBoxId,
+      selectedTextBoxIds,
       cleanUpEmptyEditingTextBox,
+      clearEditingTextBoxRef,
     ]
   )
 
@@ -1399,25 +1446,41 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     (e) => {
       if (!isKeyboard || !note) return
       if (e.button !== 0) return
-      // Prevent the browser from moving focus to document.body (mobile) or
-      // generating a click event that could steal focus away from the new textarea.
       e.preventDefault()
       bumpToolbarToThisPane()
+
+      // Blur just transitioned from editing → chrome in the same click.
+      // Don't create a new box; the chrome state will be visible now.
+      if (justBlurredToChrome.current) {
+        justBlurredToChrome.current = false
+        return
+      }
+
+      // A textbox is selected (chrome visible). First click deselects.
+      if (selectedTextBoxIds.length > 0) {
+        cleanUpEmptyEditingTextBox(editingTextBoxId)
+        setEditingTextBoxId(null)
+        setSelectedTextBoxIds([])
+        clearEditingTextBoxRef()
+        return
+      }
+
       cleanUpEmptyEditingTextBox(editingTextBoxId)
       const [x, y] = getPointerPos(e)
       const id = uuidv4()
-      // Extend to the current viewport's right edge in logical coordinates.
-      // Using (scrollLeft + clientWidth) / zoom works for all note types and
-      // all horizontal scroll positions.
       const container = containerRef.current
       const viewportRight = container && layoutW > 0
         ? (container.scrollLeft + container.clientWidth) / noteZoom
         : layoutW / noteZoom
       const width = Math.max(60, viewportRight - x - 16)
-      createTextBox(note.id, { id, x, y, width, content: '' })
+      createTextBox(note.id, {
+        id, x, y, width, content: '',
+        size: textSize !== 'medium' ? textSize : undefined,
+      })
       setEditingTextBoxId(id)
+      setEditingTextBoxRef(note.id, id)
     },
-    [isKeyboard, note, editingTextBoxId, getPointerPos, layoutW, noteZoom, createTextBox, bumpToolbarToThisPane, cleanUpEmptyEditingTextBox]
+    [isKeyboard, note, editingTextBoxId, selectedTextBoxIds, getPointerPos, layoutW, noteZoom, createTextBox, bumpToolbarToThisPane, cleanUpEmptyEditingTextBox, textSize, setEditingTextBoxRef, clearEditingTextBoxRef]
   )
 
   const handleTextBoxEdit = useCallback(

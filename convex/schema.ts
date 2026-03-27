@@ -28,6 +28,7 @@ const textBoxValidator = v.object({
   width: v.number(),
   content: v.string(),
   rotation: v.optional(v.number()),
+  size: v.optional(v.union(v.literal("small"), v.literal("medium"), v.literal("large"))),
 });
 
 export default defineSchema({
@@ -64,7 +65,7 @@ export default defineSchema({
     pdfBackgroundFileId: v.optional(v.id("files")),
     /** Raw EPUB file rendered as fixed-width HTML behind ink/text. */
     epubBackgroundFileId: v.optional(v.id("files")),
-    /** Fixed layout width (px) for EPUB content; set at import, never changes. */
+    /** Fixed layout width (px) for EPUB content; editable in note settings. */
     epubContentWidth: v.optional(v.number()),
     /**
      * Body text size (pt) chosen at import; scales rasterized PDF vs note typography (baseline 20).

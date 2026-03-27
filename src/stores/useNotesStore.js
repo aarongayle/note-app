@@ -48,13 +48,24 @@ export const PEN_TYPES = {
   },
 }
 
-const COLORS = [
-  '#000000', '#374151', '#dc2626', '#ea580c',
-  '#2563eb', '#059669', '#7c3aed', '#db2777',
+export const PEN_COLORS = [
+  '#000000',
+  '#6b7280',
+  '#2563eb',
+  '#dc2626',
+  '#16a34a',
+]
+
+export const HIGHLIGHTER_COLORS = [
+  '#fde047',
+  '#38bdf8',
+  '#4ade80',
+  '#f472b6',
+  '#a855f7',
 ]
 
 /**
- * @type {null | { onCreateFolder: (a: object) => void, onCreateNote: (a: object) => void, onDeleteItem: (a: { clientId: string }) => void, onRenameItem: (a: { clientId: string, name: string }) => void, scheduleNoteSave: (clientId: string) => void }}
+ * @type {null | { onCreateFolder: (a: object) => void, onCreateNote: (a: object) => void, onDeleteItem: (a: { clientId: string }) => void, onRenameItem: (a: { clientId: string, name: string }) => void, onMoveItem: (a: { clientId: string, newParentClientId: string | null, newIndex: number }) => void, scheduleNoteSave: (clientId: string) => void }}
  * onCreateNote payload may include imageEmbeds, pdfBackgroundFileId.
  */
 let persistence = null
@@ -113,9 +124,14 @@ const useNotesStore = create((set, get) => ({
   /** Which note receives toolbar actions in split view; null = active (first) pane */
   splitToolbarNoteId: null,
   activePen: 'pen',
-  activeColor: COLORS[0],
+  penColor: PEN_COLORS[0],
+  highlighterColor: HIGHLIGHTER_COLORS[0],
   penSize: 3,
-  colors: COLORS,
+  penColors: PEN_COLORS,
+  highlighterColors: HIGHLIGHTER_COLORS,
+  textSize: 'medium',
+  /** @type {{ noteId: string, boxId: string } | null} Currently-editing textBox ref for toolbar sync. */
+  editingTextBoxRef: null,
   sidebarOpen: true,
   /** False until first Convex `listForUser` result is applied */
   isTreeReady: false,
@@ -472,6 +488,103 @@ const useNotesStore = create((set, get) => ({
       }
     })
     persistence?.onRenameItem?.({ clientId: id, name })
+  },
+
+  /**
+   * Merge metadata (template, import sizing, EPUB layout) into a note and persist.
+   * @param {string} noteId
+   * @param {object} partial
+   */
+  updateNoteSettings: (noteId, partial) => {
+    set((state) => {
+      const item = state.items[noteId]
+      if (!item || item.type !== 'note') return state
+      const next = {
+        ...item,
+        ...partial,
+        updatedAt: Date.now(),
+      }
+      if (partial.importEpubMargins != null) {
+        next.importEpubMarginPt = undefined
+      } else if (partial.importEpubMarginPt !== undefined) {
+        next.importEpubMargins = undefined
+      }
+      return { items: { ...state.items, [noteId]: next } }
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
+  /**
+   * Move a note or folder to another parent (or root) at the given sibling index.
+   * @param {string} draggedId
+   * @param {string | null} newParentId
+   * @param {number} newIndex
+   */
+  moveItem: (draggedId, newParentId, newIndex) => {
+    let didMove = false
+    let persistedIndex = 0
+    set((state) => {
+      const item = state.items[draggedId]
+      if (!item) return state
+
+      if (newParentId !== null) {
+        const p = state.items[newParentId]
+        if (!p || p.type !== 'folder') return state
+      }
+
+      if (item.type === 'folder') {
+        if (newParentId === draggedId) return state
+        let cur = newParentId
+        while (cur != null) {
+          if (cur === draggedId) return state
+          cur = state.items[cur]?.parentId ?? null
+        }
+      }
+
+      const oldParentId = item.parentId ?? null
+      let idx = Number.isFinite(newIndex) ? Math.max(0, Math.floor(newIndex)) : 0
+
+      const items = { ...state.items }
+      let rootIds = [...state.rootIds]
+
+      if (oldParentId === null) {
+        rootIds = rootIds.filter((r) => r !== draggedId)
+      } else {
+        const op = items[oldParentId]
+        if (!op || op.type !== 'folder') return state
+        items[oldParentId] = {
+          ...op,
+          childIds: op.childIds.filter((c) => c !== draggedId),
+        }
+      }
+
+      items[draggedId] = { ...item, parentId: newParentId }
+
+      if (newParentId === null) {
+        idx = Math.min(idx, rootIds.length)
+        persistedIndex = idx
+        rootIds.splice(idx, 0, draggedId)
+      } else {
+        const np = items[newParentId]
+        if (!np || np.type !== 'folder') return state
+        const childIds = [...np.childIds].filter((c) => c !== draggedId)
+        idx = Math.min(idx, childIds.length)
+        persistedIndex = idx
+        childIds.splice(idx, 0, draggedId)
+        items[newParentId] = { ...np, childIds }
+      }
+
+      didMove = true
+      return { items, rootIds }
+    })
+
+    if (didMove) {
+      persistence?.onMoveItem?.({
+        clientId: draggedId,
+        newParentClientId: newParentId,
+        newIndex: persistedIndex,
+      })
+    }
   },
 
   addStroke: (noteId, stroke) => {
@@ -1041,9 +1154,28 @@ const useNotesStore = create((set, get) => ({
 
   setActivePen: (penId) =>
     set({ activePen: PEN_TYPES[penId] ? penId : 'pen' }),
-  setActiveColor: (color) => set({ activeColor: color }),
+  setPenColor: (color) => set({ penColor: color }),
+  setHighlighterColor: (color) => set({ highlighterColor: color }),
   setPenSize: (size) => set({ penSize: size }),
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
+
+  setEditingTextBoxRef: (noteId, boxId) => set({ editingTextBoxRef: { noteId, boxId } }),
+  clearEditingTextBoxRef: () => set({ editingTextBoxRef: null }),
+
+  syncTextSizeFromTextBox: (textBox) => set({
+    textSize: textBox.size || 'medium',
+  }),
+
+  _patchEditingTextBox: (patch) => {
+    const ref = get().editingTextBoxRef
+    if (!ref) return
+    get().updateTextBox(ref.noteId, ref.boxId, patch)
+  },
+
+  setTextSize: (size) => {
+    set({ textSize: size })
+    get()._patchEditingTextBox({ size })
+  },
 }))
 
 if (!PEN_TYPES[useNotesStore.getState().activePen]) {
