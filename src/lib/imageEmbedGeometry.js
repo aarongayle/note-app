@@ -311,7 +311,14 @@ export function embedSkewHandlePoints(corners) {
 export function embedSkewHandleVisualRadius(noteZoom) {
   const z = Math.max(noteZoom, 0.05)
   const inv = 1 / z
-  return Math.max(0.68 * LASSO_HANDLE_RADIUS * inv, 2.5 * inv)
+  return Math.max(0.95 * LASSO_HANDLE_RADIUS * inv, 3.5 * inv)
+}
+
+/** Invisible skew-handle hit radius (triangle scale basis in local space). */
+export function embedSkewHandleHitRadius(noteZoom) {
+  const z = Math.max(noteZoom, 0.05)
+  const inv = 1 / z
+  return Math.max(embedSkewHandleVisualRadius(noteZoom) * 1.75, 8 * inv)
 }
 
 /**
@@ -368,8 +375,10 @@ function pointInTriangle(px, py, ax, ay, bx, by, cx, cy) {
  * @param {number} noteZoom
  */
 function hitEmbedSkewHandle(lx, ly, corners, noteZoom) {
-  const hitSize = embedSkewHandleVisualRadius(noteZoom) * 1.12
+  const hitSize = embedSkewHandleHitRadius(noteZoom)
   for (const p of embedSkewHandlePoints(corners)) {
+    // First allow a forgiving radial tap target around each skew handle.
+    if (Math.hypot(lx - p.x, ly - p.y) <= hitSize) return p.kind
     const tri = embedSkewHandleTrianglePoints(
       corners,
       p.x,

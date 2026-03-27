@@ -170,7 +170,7 @@ export const LASSO_ROTATE_OFFSET = 32
 export const LASSO_HANDLE_RADIUS = 9
 
 /** Extra hit padding around lasso / embed handles (note space, before `/ noteZoom`). */
-export const HANDLE_HIT_RADIUS = 12
+export const HANDLE_HIT_RADIUS = 14
 
 /**
  * Invisible SVG shapes for pointer capture — same geometry as {@link hitTransformHandle}.

@@ -35,7 +35,7 @@ import {
   embedRectFromCornerDrag,
   embedSkewHandlePoints,
   embedSkewHandleTrianglePoints,
-  embedSkewHandleVisualRadius,
+  embedSkewHandleHitRadius,
   embedImageDeleteHandleLocal,
   embedSkewPatchFromDrag,
   normalizeEmbedQuad,
@@ -67,6 +67,7 @@ import { scrollPositionCache } from '../lib/scrollPositionCache.js'
 import { setViewState, getViewState } from '../lib/noteViewState.js'
 
 const SCROLL_PERSIST_DEBOUNCE_MS = 1500
+const ANDROID_BACK_GESTURE_EDGE_GUARD_PX = 24
 const scrollPersistTimers = new Map()
 
 function debouncedScrollPersist(noteId, noteZoom) {
@@ -541,6 +542,27 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     [selectedStrokeIndices]
   )
 
+  const isAndroidDevice = useMemo(() => {
+    if (typeof navigator === 'undefined') return false
+    return /Android/i.test(navigator.userAgent ?? '')
+  }, [])
+
+  /**
+   * Android edge-swipe back can steal touch gestures before the app receives
+   * enough movement. Ignore drag starts in a small left/right gutter so users
+   * begin drags slightly inward and keep control inside the canvas.
+   */
+  const isEdgeBackGestureRisk = useCallback((e) => {
+    if (!isAndroidDevice) return false
+    if (e.pointerType !== 'touch') return false
+    const viewportW = window.innerWidth || 0
+    if (viewportW <= 0) return false
+    return (
+      e.clientX <= ANDROID_BACK_GESTURE_EDGE_GUARD_PX ||
+      e.clientX >= viewportW - ANDROID_BACK_GESTURE_EDGE_GUARD_PX
+    )
+  }, [isAndroidDevice])
+
   const showLassoChrome =
     !isKeyboard &&
     !isSelect &&
@@ -579,6 +601,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
       if (e.button !== 0) return
       // Pen/mouse always; touch only on phone-class viewports (see noteInputDefaults).
       if (e.pointerType === 'touch' && !phoneClassViewport) return
+      if (isEdgeBackGestureRisk(e)) return
 
       if (isSelect) {
         e.preventDefault()
@@ -917,6 +940,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
       selectedImageEmbedId,
       noteZoom,
       phoneClassViewport,
+      isEdgeBackGestureRisk,
       bumpToolbarToThisPane,
       removeImageEmbed,
       setSelectedImageEmbedId,
@@ -1584,6 +1608,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
       ref={containerRef}
       data-note-scroll={note?.id}
       className="flex-1 min-h-0 overflow-y-auto overflow-x-auto relative bg-canvas-bg min-w-0 touch-pan-x touch-pan-y"
+      style={{ overscrollBehaviorX: 'contain' }}
     >
       <div className="relative min-w-0" style={spacerStyle}>
         {/* data-notezoom lets the resize handle drag compute note-space deltas */}
@@ -1649,13 +1674,13 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
             }`}
             style={{
               minHeight: note.scrollHeight,
-              touchAction: isKeyboard || isSelect ? 'auto' : 'none',
+              // Keep pointer capture stable for touch handle drags (select/lasso/draw).
+              touchAction: isKeyboard ? 'auto' : 'none',
             }}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
-            onPointerLeave={handlePointerUp}
           >
             {note.strokes.map((stroke, i) => (
               <path
@@ -1904,21 +1929,24 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
                         stroke="none"
                       />
                       {skewHit.map(({ kind, x: sx, y: sy }) => {
-                        const tri = embedSkewHandleTrianglePoints(
-                          corners,
-                          sx,
-                          sy,
-                          noteZoom,
-                          embedSkewHandleVisualRadius(noteZoom) * 1.12
-                        )
+                        const hitR = embedSkewHandleHitRadius(noteZoom)
+                        const tri = embedSkewHandleTrianglePoints(corners, sx, sy, noteZoom, hitR)
                         const pts = tri.map(([x, y]) => `${x},${y}`).join(' ')
                         return (
-                          <polygon
-                            key={`iskh-${kind}`}
-                            points={pts}
-                            fill="transparent"
-                            stroke="none"
-                          />
+                          <g key={`iskh-${kind}`}>
+                            <polygon
+                              points={pts}
+                              fill="transparent"
+                              stroke="none"
+                            />
+                            <circle
+                              cx={sx}
+                              cy={sy}
+                              r={hitR}
+                              fill="transparent"
+                              stroke="none"
+                            />
+                          </g>
                         )
                       })}
                       <circle
