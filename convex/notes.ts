@@ -250,7 +250,6 @@ export const createNote = mutation({
         : {}),
       ...(epubMargin !== undefined ? { importEpubMarginPt: epubMargin } : {}),
       scrollHeight: 2000,
-      zoom: 1,
     });
   },
 });
@@ -288,8 +287,6 @@ export const renameItem = mutation({
   },
 });
 
-const NOTE_ZOOM_MIN = 0.5;
-const NOTE_ZOOM_MAX = 3;
 
 export const updateNote = mutation({
   args: {
@@ -302,10 +299,7 @@ export const updateNote = mutation({
     epubBackgroundFileId: v.union(v.null(), v.id("files")),
     epubContentWidth: v.union(v.null(), v.number()),
     bookmarkY: v.union(v.null(), v.number()),
-    lastScrollY: v.union(v.null(), v.number()),
-    inputMode: v.union(v.null(), v.literal("stylus"), v.literal("keyboard"), v.literal("select")),
     scrollHeight: v.number(),
-    zoom: v.number(),
     updatedAt: v.number(),
     importDocFontSizePt: v.number(),
     importEpubMarginPt: v.union(v.null(), v.number()),
@@ -327,9 +321,6 @@ export const updateNote = mutation({
     if (fileIds.length > 0) {
       await assertFilesOwnedByUser(ctx, userId, fileIds);
     }
-    const z = Number.isFinite(args.zoom)
-      ? Math.min(NOTE_ZOOM_MAX, Math.max(NOTE_ZOOM_MIN, args.zoom))
-      : 1;
     const fontPt = Math.min(48, Math.max(10, args.importDocFontSizePt));
     let nextEpubMargins: {
       top: number;
@@ -371,10 +362,7 @@ export const updateNote = mutation({
             ? Math.min(EPUB_WIDTH_MAX, Math.max(EPUB_WIDTH_MIN, args.epubContentWidth))
             : undefined,
       bookmarkY: args.bookmarkY === null ? undefined : args.bookmarkY,
-      lastScrollY: args.lastScrollY === null ? undefined : args.lastScrollY,
-      inputMode: args.inputMode === null ? undefined : args.inputMode,
       scrollHeight: args.scrollHeight,
-      zoom: z,
       updatedAt: args.updatedAt,
       importDocFontSizePt: fontPt,
       importEpubMargins: nextEpubMargins,

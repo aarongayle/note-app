@@ -6,7 +6,7 @@ import {
   useCallback,
   useMemo,
 } from 'react'
-import useNotesStore, { PEN_TYPES, scheduleNoteSave } from '../stores/useNotesStore'
+import useNotesStore, { PEN_TYPES } from '../stores/useNotesStore'
 import {
   useDefaultNoteInputMode,
   usePhoneClassViewport,
@@ -44,28 +44,31 @@ import ImageEmbedsLayer from './ImageEmbedsLayer.jsx'
 import TextBoxesLayer from './TextBoxesLayer.jsx'
 
 import { scrollPositionCache } from '../lib/scrollPositionCache.js'
+import { setViewState, getViewState } from '../lib/noteViewState.js'
 
-const SCROLL_SAVE_DEBOUNCE_MS = 1500
-const scrollSaveTimers = new Map()
+const SCROLL_PERSIST_DEBOUNCE_MS = 1500
+const scrollPersistTimers = new Map()
 
-function debouncedScrollSave(noteId) {
-  clearTimeout(scrollSaveTimers.get(noteId))
-  scrollSaveTimers.set(
+function debouncedScrollPersist(noteId, noteZoom) {
+  clearTimeout(scrollPersistTimers.get(noteId))
+  scrollPersistTimers.set(
     noteId,
     setTimeout(() => {
-      scrollSaveTimers.delete(noteId)
-      scheduleNoteSave(noteId)
-    }, SCROLL_SAVE_DEBOUNCE_MS),
+      scrollPersistTimers.delete(noteId)
+      const phys = scrollPositionCache.get(noteId)
+      if (phys != null) setViewState(noteId, { lastScrollY: phys / noteZoom })
+    }, SCROLL_PERSIST_DEBOUNCE_MS),
   )
 }
 
-function flushScrollSave(noteId) {
-  const timer = scrollSaveTimers.get(noteId)
+function flushScrollPersist(noteId, noteZoom) {
+  const timer = scrollPersistTimers.get(noteId)
   if (timer) {
     clearTimeout(timer)
-    scrollSaveTimers.delete(noteId)
+    scrollPersistTimers.delete(noteId)
   }
-  scheduleNoteSave(noteId)
+  const phys = scrollPositionCache.get(noteId)
+  if (phys != null) setViewState(noteId, { lastScrollY: phys / noteZoom })
 }
 
 /** Ray-casting point-in-polygon test for lasso hit detection. */
@@ -385,7 +388,8 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     const container = containerRef.current
     if (!container || !scrollSyncNoteId) return
     scrollPositionCache.set(scrollSyncNoteId, container.scrollTop)
-    debouncedScrollSave(scrollSyncNoteId)
+    const curZoom = useNotesStore.getState().items[scrollSyncNoteId]?.zoom ?? 1
+    debouncedScrollPersist(scrollSyncNoteId, curZoom)
     if (isPassive) return
     const n = useNotesStore.getState().items[scrollSyncNoteId]
     if (!n || n.type !== 'note') return
@@ -432,18 +436,13 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     if (!container || !note) return
     container.addEventListener('scroll', syncScrollExtent, { passive: true })
     const noteIdForCleanup = note.id
-    // beforeunload: the cache is already up-to-date from scroll events;
-    // just flush the pending save so Convex gets it before the tab closes.
-    const onBeforeUnload = () => flushScrollSave(noteIdForCleanup)
+    const getZoom = () => useNotesStore.getState().items[noteIdForCleanup]?.zoom ?? 1
+    const onBeforeUnload = () => flushScrollPersist(noteIdForCleanup, getZoom())
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => {
       window.removeEventListener('beforeunload', onBeforeUnload)
       container.removeEventListener('scroll', syncScrollExtent)
-      // Don't re-read container.scrollTop here — the DOM already reflects
-      // the NEW note's spacer height, so the browser may have clamped the
-      // old scroll position.  The cache already has the correct value from
-      // the last scroll event.
-      if (noteIdForCleanup) flushScrollSave(noteIdForCleanup)
+      if (noteIdForCleanup) flushScrollPersist(noteIdForCleanup, getZoom())
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- note.id controls when to rebind; fresh state read inside handler
   }, [note?.id, syncScrollExtent])
@@ -451,15 +450,18 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   // Restore scroll position before first paint after remount (e.g. split-view
   // toggle or page refresh). Prefer the in-memory cache (exact physical
   // scrollTop from this session); fall back to the persisted logical Y
-  // stored on the note (survives page refresh / device switch).
+  // in localStorage (survives page refresh).
   useLayoutEffect(() => {
     const container = containerRef.current
     if (!container || !note?.id) return
     const cached = scrollPositionCache.get(note.id)
     if (cached != null && cached > 0) {
       container.scrollTop = cached
-    } else if (note.lastScrollY != null && note.lastScrollY > 0) {
-      container.scrollTop = note.lastScrollY * noteZoom
+    } else {
+      const vs = getViewState(note.id)
+      if (vs.lastScrollY != null && vs.lastScrollY > 0) {
+        container.scrollTop = vs.lastScrollY * noteZoom
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- restore only on mount for this note
   }, [note?.id])

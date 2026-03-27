@@ -19,17 +19,32 @@ export function layoutImageSize(natW, natH, maxW) {
 /**
  * @param {string} fileId
  * @param {{ width: number, height: number }} size
+ * @param {{ x: number, y: number }} [origin]
+ */
+export function createImageEmbed(fileId, size, origin = { x: 40, y: 40 }) {
+  return {
+    id: uuidv4(),
+    fileId,
+    x: origin.x,
+    y: origin.y,
+    width: size.width,
+    height: size.height,
+    rotation: 0,
+  }
+}
+
+/**
+ * @param {string} fileId
+ * @param {{ width: number, height: number }} size
  */
 export function singleImageEmbed(fileId, size) {
-  return [
-    {
-      id: uuidv4(),
-      fileId,
-      x: 40,
-      y: 40,
-      width: size.width,
-      height: size.height,
-      rotation: 0,
-    },
-  ]
+  return [createImageEmbed(fileId, size)]
+}
+
+/** Offset origins so multiple photos do not stack exactly on top of each other. */
+export function nextImageEmbedOrigin(existingEmbedCount) {
+  const step = 36
+  const col = existingEmbedCount % 8
+  const row = Math.floor(existingEmbedCount / 8)
+  return { x: 40 + col * step, y: 40 + row * step }
 }

@@ -1,3 +1,4 @@
+import { useMutation } from 'convex/react'
 import { useState, useRef, useCallback } from 'react'
 import {
   Pen,
@@ -15,8 +16,17 @@ import {
   Redo2,
   Columns2,
   Bookmark,
+  Camera,
 } from 'lucide-react'
-import { NOTE_ZOOM_BUTTON_STEP } from '../lib/canvasConstants.js'
+import { api } from '../../convex/_generated/api.js'
+import { NOTE_ZOOM_BUTTON_STEP, KEYBOARD_FONT_SIZE_PX } from '../lib/canvasConstants.js'
+import { uploadBlobToFiles } from '../lib/convexFileUpload.js'
+import {
+  createImageEmbed,
+  layoutImageSize,
+  measureImageBitmap,
+  nextImageEmbedOrigin,
+} from '../lib/fileToNote.js'
 import useNotesStore, {
   PEN_TYPES,
   NOTE_ZOOM_MIN,
@@ -41,6 +51,11 @@ const PEN_ICONS = {
  */
 export default function Toolbar({ noteId: noteIdProp } = {}) {
   const [splitPickerOpen, setSplitPickerOpen] = useState(false)
+  const [cameraBusy, setCameraBusy] = useState(false)
+  const cameraInputRef = useRef(null)
+  const generateUploadUrl = useMutation(api.files.generateUploadUrl)
+  const saveUploadedFile = useMutation(api.files.saveUploadedFile)
+  const appendImageEmbeds = useNotesStore((s) => s.appendImageEmbeds)
   const defaultInputMode = useDefaultNoteInputMode()
 
   const activeNoteId = useNotesStore((s) => s.activeNoteId)
@@ -133,6 +148,57 @@ export default function Toolbar({ noteId: noteIdProp } = {}) {
     }
   }, [targetNoteId, bookmarkY, noteZoom, setNoteBookmark])
 
+  const handleCameraInputChange = useCallback(
+    async (e) => {
+      const input = e.target
+      const file = input.files?.[0]
+      input.value = ''
+      if (!file || !targetNoteId) return
+      if (!file.type.startsWith('image/')) {
+        window.alert('Please choose a photo (image file).')
+        return
+      }
+      setCameraBusy(true)
+      try {
+        const note = useNotesStore.getState().items[targetNoteId]
+        if (!note || note.type !== 'note') return
+        const embedCount = (note.imageEmbeds ?? []).length
+        const docPt = note.importDocFontSizePt ?? KEYBOARD_FONT_SIZE_PX
+        const scale = docPt / KEYBOARD_FONT_SIZE_PX
+        const maxImageW = Math.round(680 * scale)
+        const { w, h } = await measureImageBitmap(file)
+        const { width, height } = layoutImageSize(w, h, maxImageW)
+        const base =
+          file.name && !/^image\.(jpe?g|png|webp)$/i.test(file.name)
+            ? file.name
+            : `Photo-${Date.now()}.jpg`
+        const fileId = await uploadBlobToFiles(
+          generateUploadUrl,
+          saveUploadedFile,
+          file,
+          base,
+          file.type || 'image/jpeg',
+        )
+        const origin = nextImageEmbedOrigin(embedCount)
+        const embed = createImageEmbed(fileId, { width, height }, origin)
+        appendImageEmbeds(targetNoteId, [embed])
+      } catch (err) {
+        console.error(err)
+        window.alert(
+          err instanceof Error ? err.message : 'Could not add photo to the note.',
+        )
+      } finally {
+        setCameraBusy(false)
+      }
+    },
+    [
+      targetNoteId,
+      generateUploadUrl,
+      saveUploadedFile,
+      appendImageEmbeds,
+    ],
+  )
+
   const currentPen = PEN_TYPES[activePen]
   const isStylus = inputMode === 'stylus'
   const isKeyboard = inputMode === 'keyboard'
@@ -187,6 +253,32 @@ export default function Toolbar({ noteId: noteIdProp } = {}) {
                 size={18}
                 fill={bookmarkY != null ? 'currentColor' : 'none'}
               />
+            </button>
+          </div>
+        )}
+
+        {targetNoteId && (
+          <div className={groupClass}>
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="sr-only"
+              tabIndex={-1}
+              aria-hidden
+              onChange={handleCameraInputChange}
+            />
+            <button
+              type="button"
+              disabled={cameraBusy}
+              onClick={() => cameraInputRef.current?.click()}
+              title="Take or choose a photo to embed in this note"
+              aria-label="Take or choose a photo to embed in this note"
+              aria-busy={cameraBusy}
+              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <Camera size={18} />
             </button>
           </div>
         )}

@@ -83,12 +83,12 @@ export default defineSchema({
     ),
     /** Logical Y position (pre-zoom) of a single user bookmark. */
     bookmarkY: v.optional(v.number()),
-    /** Last logical scroll Y so the user returns to their reading position. */
+    /** @deprecated — now stored in localStorage per device */
     lastScrollY: v.optional(v.number()),
-    /** Active tool: stylus, keyboard, or select */
+    /** @deprecated — now stored in localStorage per device */
     inputMode: v.optional(v.union(v.literal("stylus"), v.literal("keyboard"), v.literal("select"))),
     scrollHeight: v.optional(v.number()),
-    /** View zoom (1 = 100%), clamped client-side to ~0.5–3 */
+    /** @deprecated — now stored in localStorage per device */
     zoom: v.optional(v.number()),
     updatedAt: v.optional(v.number()),
   })

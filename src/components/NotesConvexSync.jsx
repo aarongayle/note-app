@@ -6,20 +6,13 @@ import {
   MIN_NOTE_SCROLL_HEIGHT,
   persistedScrollHeightForNote,
 } from '../lib/noteScrollBounds.js'
-import { scrollPositionCache } from '../lib/scrollPositionCache.js'
+import { seedViewStateFromServer } from '../lib/noteViewState.js'
 import useNotesStore, {
   clearNotesPersistence,
   configureNotesPersistence,
-  NOTE_ZOOM_MAX,
-  NOTE_ZOOM_MIN,
 } from '../stores/useNotesStore'
 
 const SAVE_DEBOUNCE_MS = 450
-
-function clampZoomForServer(z) {
-  const n = Number.isFinite(z) ? z : 1
-  return Math.min(NOTE_ZOOM_MAX, Math.max(NOTE_ZOOM_MIN, n))
-}
 
 function buildUpdateNotePayload(note) {
   return {
@@ -41,14 +34,7 @@ function buildUpdateNotePayload(note) {
     epubBackgroundFileId: note.epubBackgroundFileId ?? null,
     epubContentWidth: note.epubContentWidth ?? null,
     bookmarkY: note.bookmarkY ?? null,
-    lastScrollY: (() => {
-      const phys = scrollPositionCache.get(note.id)
-      if (phys != null) return phys / (note.zoom ?? 1)
-      return note.lastScrollY ?? null
-    })(),
-    inputMode: note.inputMode ?? null,
     scrollHeight: persistedScrollHeightForNote(note),
-    zoom: clampZoomForServer(note.zoom ?? 1),
     updatedAt: note.updatedAt,
     importDocFontSizePt: note.importDocFontSizePt ?? KEYBOARD_FONT_SIZE_PX,
     importEpubMarginPt: note.importEpubMarginPt ?? null,
@@ -70,6 +56,14 @@ function rowsToStoreState(rows) {
         createdAt: row.createdAt,
       }
     } else {
+      // Seed per-device view state from server (migration: only writes keys
+      // not already present in localStorage, so local always wins).
+      seedViewStateFromServer(row.clientId, {
+        zoom: row.zoom,
+        inputMode: row.inputMode,
+        lastScrollY: row.lastScrollY,
+      })
+
       items[row.clientId] = {
         id: row.clientId,
         type: 'note',
@@ -98,10 +92,7 @@ function rowsToStoreState(rows) {
           ? undefined
           : row.importEpubMarginPt,
         bookmarkY: row.bookmarkY,
-        lastScrollY: row.lastScrollY,
-        inputMode: row.inputMode,
         scrollHeight: row.scrollHeight ?? MIN_NOTE_SCROLL_HEIGHT,
-        zoom: row.zoom ?? 1,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt ?? row.createdAt,
       }

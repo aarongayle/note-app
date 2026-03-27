@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Upload } from 'lucide-react'
 import { api } from '../../convex/_generated/api.js'
 import useNotesStore from '../stores/useNotesStore'
+import { uploadBlobToFiles } from '../lib/convexFileUpload.js'
 import {
   layoutImageSize,
   measureImageBitmap,
@@ -51,18 +52,6 @@ export default function FileStoragePanel() {
     })
   }
 
-  async function uploadBlob(blob, name, contentType) {
-    const postUrl = await generateUploadUrl()
-    const res = await fetch(postUrl, {
-      method: 'POST',
-      headers: contentType ? { 'Content-Type': contentType } : {},
-      body: blob,
-    })
-    if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
-    const { storageId } = await res.json()
-    return await saveUploadedFile({ storageId, name, contentType: contentType || undefined })
-  }
-
   async function runImport({
     noteName,
     parentId,
@@ -75,7 +64,13 @@ export default function FileStoragePanel() {
 
     if (kind === 'epub') {
       setProgressMsg('Uploading EPUB…')
-      const epubFileId = await uploadBlob(file, file.name, 'application/epub+zip')
+      const epubFileId = await uploadBlobToFiles(
+        generateUploadUrl,
+        saveUploadedFile,
+        file,
+        file.name,
+        'application/epub+zip',
+      )
       createNote(noteName, 'blank', parentId, {
         epubBackgroundFileId: epubFileId,
         epubContentWidth,
@@ -85,7 +80,13 @@ export default function FileStoragePanel() {
       return
     }
 
-    const fileId = await uploadBlob(file, file.name, file.type || undefined)
+    const fileId = await uploadBlobToFiles(
+      generateUploadUrl,
+      saveUploadedFile,
+      file,
+      file.name,
+      file.type || undefined,
+    )
 
     const scale = documentFontSizePt / KEYBOARD_FONT_SIZE_PX
     const maxImageW = Math.round(680 * scale)

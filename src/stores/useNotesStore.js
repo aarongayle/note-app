@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { v4 as uuidv4 } from 'uuid'
 import { KEYBOARD_DOC_BLOCK_ID } from '../lib/canvasConstants.js'
 import { MIN_NOTE_SCROLL_HEIGHT } from '../lib/noteScrollBounds.js'
+import { getViewState, setViewState } from '../lib/noteViewState.js'
 
 export const TEMPLATES = {
   blank: { id: 'blank', name: 'Blank', icon: 'Square' },
@@ -66,10 +67,6 @@ export function clearNotesPersistence() {
   persistence = null
 }
 
-/** Trigger a debounced save for a note (e.g. after scroll position changes). */
-export function scheduleNoteSave(noteId) {
-  persistence?.scheduleNoteSave?.(noteId)
-}
 
 export const NOTE_ZOOM_MIN = 0.5
 export const NOTE_ZOOM_MAX = 3
@@ -209,10 +206,14 @@ const useNotesStore = create((set, get) => ({
         nextSplitToolbar = null
       }
 
+      // Source per-device view state (zoom, inputMode) from localStorage
       const noteInputModes = { ...state.noteInputModes }
       for (const [id, item] of Object.entries(mergedItems)) {
-        if (item?.type === 'note' && item.inputMode && !(id in noteInputModes)) {
-          noteInputModes[id] = item.inputMode
+        if (item?.type !== 'note') continue
+        const vs = getViewState(id)
+        if (vs.zoom != null) item.zoom = vs.zoom
+        if (vs.inputMode && !(id in noteInputModes)) {
+          noteInputModes[id] = vs.inputMode
         }
       }
 
@@ -680,6 +681,27 @@ const useNotesStore = create((set, get) => ({
     persistence?.scheduleNoteSave?.(noteId)
   },
 
+  /** Append pinned image embeds (e.g. camera capture) and persist. */
+  appendImageEmbeds: (noteId, newEmbeds) => {
+    if (!newEmbeds.length) return
+    set((state) => {
+      const note = state.items[noteId]
+      if (!note || note.type !== 'note') return state
+      const prev = note.imageEmbeds ?? []
+      return {
+        items: {
+          ...state.items,
+          [noteId]: {
+            ...note,
+            imageEmbeds: [...prev, ...newEmbeds.map((e) => ({ ...e }))],
+            updatedAt: Date.now(),
+          },
+        },
+      }
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
   /** Replace all strokes while a gesture is in progress (undo handled by commit/cancel). */
   setNoteStrokesLive: (noteId, strokes) => {
     if (!strokesEditSnapshots[noteId]) return
@@ -891,16 +913,10 @@ const useNotesStore = create((set, get) => ({
   },
 
   setNoteInputMode: (noteId, mode) => {
-    set((state) => {
-      const note = state.items[noteId]
-      return {
-        noteInputModes: { ...state.noteInputModes, [noteId]: mode },
-        ...(note && note.type === 'note'
-          ? { items: { ...state.items, [noteId]: { ...note, inputMode: mode, updatedAt: Date.now() } } }
-          : {}),
-      }
-    })
-    persistence?.scheduleNoteSave?.(noteId)
+    setViewState(noteId, { inputMode: mode })
+    set((state) => ({
+      noteInputModes: { ...state.noteInputModes, [noteId]: mode },
+    }))
   },
 
   /** Stylus/keyboard toggle from toolbar: keep split panes in sync (same mode on both notes). */
@@ -912,17 +928,11 @@ const useNotesStore = create((set, get) => ({
       ].filter((id) => id && state.items[id]?.type === 'note')
       if (ids.length === 0) return state
       const noteInputModes = { ...state.noteInputModes }
-      const items = { ...state.items }
-      const updatedAt = Date.now()
       for (const id of ids) {
         noteInputModes[id] = mode
-        const n = items[id]
-        if (n && n.type === 'note') {
-          items[id] = { ...n, inputMode: mode, updatedAt }
-        }
+        setViewState(id, { inputMode: mode })
       }
-      for (const id of ids) persistence?.scheduleNoteSave?.(id)
-      return { noteInputModes, items }
+      return { noteInputModes }
     }),
 
   /** @param {number} zoom Absolute zoom clamped to NOTE_ZOOM_MIN..NOTE_ZOOM_MAX */
@@ -935,14 +945,13 @@ const useNotesStore = create((set, get) => ({
       Math.max(NOTE_ZOOM_MIN, Number.isFinite(zoom) ? zoom : 1)
     )
     if ((note.zoom ?? 1) === z) return
-    const updatedAt = Date.now()
     set({
       items: {
         ...state.items,
-        [noteId]: { ...note, zoom: z, updatedAt },
+        [noteId]: { ...note, zoom: z },
       },
     })
-    persistence?.scheduleNoteSave?.(noteId)
+    setViewState(noteId, { zoom: z })
   },
 
   /** Multiply current note zoom by `factor` (e.g. 1.12 / 0.89). */
@@ -954,14 +963,13 @@ const useNotesStore = create((set, get) => ({
     const f = Number.isFinite(factor) ? factor : 1
     const z = Math.min(NOTE_ZOOM_MAX, Math.max(NOTE_ZOOM_MIN, cur * f))
     if ((note.zoom ?? 1) === z) return
-    const updatedAt = Date.now()
     set({
       items: {
         ...state.items,
-        [noteId]: { ...note, zoom: z, updatedAt },
+        [noteId]: { ...note, zoom: z },
       },
     })
-    persistence?.scheduleNoteSave?.(noteId)
+    setViewState(noteId, { zoom: z })
   },
 
   setNoteBookmark: (noteId, logicalY) => {
