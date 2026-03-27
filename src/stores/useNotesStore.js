@@ -66,6 +66,11 @@ export function clearNotesPersistence() {
   persistence = null
 }
 
+/** Trigger a debounced save for a note (e.g. after scroll position changes). */
+export function scheduleNoteSave(noteId) {
+  persistence?.scheduleNoteSave?.(noteId)
+}
+
 export const NOTE_ZOOM_MIN = 0.5
 export const NOTE_ZOOM_MAX = 3
 
@@ -204,6 +209,13 @@ const useNotesStore = create((set, get) => ({
         nextSplitToolbar = null
       }
 
+      const noteInputModes = { ...state.noteInputModes }
+      for (const [id, item] of Object.entries(mergedItems)) {
+        if (item?.type === 'note' && item.inputMode && !(id in noteInputModes)) {
+          noteInputModes[id] = item.inputMode
+        }
+      }
+
       return {
         items: mergedItems,
         rootIds: mergedRootIds,
@@ -211,6 +223,7 @@ const useNotesStore = create((set, get) => ({
         activeNoteId: nextActive,
         splitViewNoteId: nextSplit,
         splitToolbarNoteId: nextSplitToolbar,
+        noteInputModes,
         stylusUndoStacks: pruneStacks(state.stylusUndoStacks),
         stylusRedoStacks: pruneStacks(state.stylusRedoStacks),
       }
@@ -877,10 +890,18 @@ const useNotesStore = create((set, get) => ({
     persistence?.scheduleNoteSave?.(noteId)
   },
 
-  setNoteInputMode: (noteId, mode) =>
-    set((state) => ({
-      noteInputModes: { ...state.noteInputModes, [noteId]: mode },
-    })),
+  setNoteInputMode: (noteId, mode) => {
+    set((state) => {
+      const note = state.items[noteId]
+      return {
+        noteInputModes: { ...state.noteInputModes, [noteId]: mode },
+        ...(note && note.type === 'note'
+          ? { items: { ...state.items, [noteId]: { ...note, inputMode: mode, updatedAt: Date.now() } } }
+          : {}),
+      }
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
 
   /** Stylus/keyboard toggle from toolbar: keep split panes in sync (same mode on both notes). */
   setEditorInputMode: (mode) =>
@@ -891,10 +912,17 @@ const useNotesStore = create((set, get) => ({
       ].filter((id) => id && state.items[id]?.type === 'note')
       if (ids.length === 0) return state
       const noteInputModes = { ...state.noteInputModes }
+      const items = { ...state.items }
+      const updatedAt = Date.now()
       for (const id of ids) {
         noteInputModes[id] = mode
+        const n = items[id]
+        if (n && n.type === 'note') {
+          items[id] = { ...n, inputMode: mode, updatedAt }
+        }
       }
-      return { noteInputModes }
+      for (const id of ids) persistence?.scheduleNoteSave?.(id)
+      return { noteInputModes, items }
     }),
 
   /** @param {number} zoom Absolute zoom clamped to NOTE_ZOOM_MIN..NOTE_ZOOM_MAX */

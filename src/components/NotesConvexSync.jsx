@@ -46,6 +46,7 @@ function buildUpdateNotePayload(note) {
       if (phys != null) return phys / (note.zoom ?? 1)
       return note.lastScrollY ?? null
     })(),
+    inputMode: note.inputMode ?? null,
     scrollHeight: persistedScrollHeightForNote(note),
     zoom: clampZoomForServer(note.zoom ?? 1),
     updatedAt: note.updatedAt,
@@ -98,6 +99,7 @@ function rowsToStoreState(rows) {
           : row.importEpubMarginPt,
         bookmarkY: row.bookmarkY,
         lastScrollY: row.lastScrollY,
+        inputMode: row.inputMode,
         scrollHeight: row.scrollHeight ?? MIN_NOTE_SCROLL_HEIGHT,
         zoom: row.zoom ?? 1,
         createdAt: row.createdAt,

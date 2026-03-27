@@ -6,7 +6,7 @@ import {
   useCallback,
   useMemo,
 } from 'react'
-import useNotesStore, { PEN_TYPES } from '../stores/useNotesStore'
+import useNotesStore, { PEN_TYPES, scheduleNoteSave } from '../stores/useNotesStore'
 import {
   useDefaultNoteInputMode,
   usePhoneClassViewport,
@@ -44,6 +44,29 @@ import ImageEmbedsLayer from './ImageEmbedsLayer.jsx'
 import TextBoxesLayer from './TextBoxesLayer.jsx'
 
 import { scrollPositionCache } from '../lib/scrollPositionCache.js'
+
+const SCROLL_SAVE_DEBOUNCE_MS = 1500
+const scrollSaveTimers = new Map()
+
+function debouncedScrollSave(noteId) {
+  clearTimeout(scrollSaveTimers.get(noteId))
+  scrollSaveTimers.set(
+    noteId,
+    setTimeout(() => {
+      scrollSaveTimers.delete(noteId)
+      scheduleNoteSave(noteId)
+    }, SCROLL_SAVE_DEBOUNCE_MS),
+  )
+}
+
+function flushScrollSave(noteId) {
+  const timer = scrollSaveTimers.get(noteId)
+  if (timer) {
+    clearTimeout(timer)
+    scrollSaveTimers.delete(noteId)
+  }
+  scheduleNoteSave(noteId)
+}
 
 /** Ray-casting point-in-polygon test for lasso hit detection. */
 function pointInPolygon(px, py, polygon) {
@@ -361,8 +384,8 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   const syncScrollExtent = useCallback(() => {
     const container = containerRef.current
     if (!container || !scrollSyncNoteId) return
-    // Always save scroll position (even in passive modes) for restore on remount
     scrollPositionCache.set(scrollSyncNoteId, container.scrollTop)
+    debouncedScrollSave(scrollSyncNoteId)
     if (isPassive) return
     const n = useNotesStore.getState().items[scrollSyncNoteId]
     if (!n || n.type !== 'note') return
@@ -408,9 +431,19 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     const container = containerRef.current
     if (!container || !note) return
     container.addEventListener('scroll', syncScrollExtent, { passive: true })
+    const noteIdForCleanup = note.id
+    // beforeunload: the cache is already up-to-date from scroll events;
+    // just flush the pending save so Convex gets it before the tab closes.
+    const onBeforeUnload = () => flushScrollSave(noteIdForCleanup)
+    window.addEventListener('beforeunload', onBeforeUnload)
     return () => {
-      if (note?.id) scrollPositionCache.set(note.id, container.scrollTop)
+      window.removeEventListener('beforeunload', onBeforeUnload)
       container.removeEventListener('scroll', syncScrollExtent)
+      // Don't re-read container.scrollTop here — the DOM already reflects
+      // the NEW note's spacer height, so the browser may have clamped the
+      // old scroll position.  The cache already has the correct value from
+      // the last scroll event.
+      if (noteIdForCleanup) flushScrollSave(noteIdForCleanup)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- note.id controls when to rebind; fresh state read inside handler
   }, [note?.id, syncScrollExtent])

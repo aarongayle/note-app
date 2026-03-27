@@ -9,7 +9,9 @@ import {
   FolderPlus,
   Trash2,
   PanelLeftClose,
+  LogOut,
 } from 'lucide-react'
+import { useAuthActions } from '@convex-dev/auth/react'
 import useNotesStore, { TEMPLATES } from '../stores/useNotesStore'
 import NewItemDialog from './NewItemDialog'
 import FileStoragePanel from './FileStoragePanel'
@@ -130,6 +132,7 @@ export default function Sidebar() {
   const items = useNotesStore((s) => s.items)
   const isTreeReady = useNotesStore((s) => s.isTreeReady)
   const toggleSidebar = useNotesStore((s) => s.toggleSidebar)
+  const { signOut } = useAuthActions()
   const [showNewItem, setShowNewItem] = useState(null)
 
   const sortedRootIds = [...rootIds].sort((a, b) => {
@@ -190,6 +193,17 @@ export default function Sidebar() {
       </div>
 
       {import.meta.env.VITE_CONVEX_URL ? <FileStoragePanel /> : null}
+
+      <div className="shrink-0 border-t border-border px-3 py-2">
+        <button
+          type="button"
+          onClick={() => void signOut()}
+          className="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md text-xs text-text-muted hover:text-text-primary hover:bg-surface-lighter transition-colors"
+        >
+          <LogOut size={13} />
+          Sign out
+        </button>
+      </div>
 
       {showNewItem && (
         <NewItemDialog

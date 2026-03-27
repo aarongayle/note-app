@@ -3,7 +3,7 @@ import { useConvexAuth } from 'convex/react'
 
 export default function AuthGate({ children }) {
   const { isLoading, isAuthenticated } = useConvexAuth()
-  const { signIn, signOut } = useAuthActions()
+  const { signIn } = useAuthActions()
 
   if (isLoading) {
     return (
@@ -31,14 +31,7 @@ export default function AuthGate({ children }) {
   }
 
   return (
-    <div className="relative h-dvh w-full">
-      <button
-        type="button"
-        onClick={() => void signOut()}
-        className="absolute top-2 right-2 z-[100] text-xs text-text-muted hover:text-text-primary px-2 py-1 rounded-md hover:bg-surface-lighter transition-colors"
-      >
-        Sign out
-      </button>
+    <div className="h-dvh w-full">
       {children}
     </div>
   )
