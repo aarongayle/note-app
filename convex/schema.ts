@@ -62,6 +62,10 @@ export default defineSchema({
     imageEmbeds: v.optional(v.array(imageEmbedFieldValidator)),
     /** PDF displayed as full-width stacked pages behind ink/text. */
     pdfBackgroundFileId: v.optional(v.id("files")),
+    /** Raw EPUB file rendered as fixed-width HTML behind ink/text. */
+    epubBackgroundFileId: v.optional(v.id("files")),
+    /** Fixed layout width (px) for EPUB content; set at import, never changes. */
+    epubContentWidth: v.optional(v.number()),
     /**
      * Body text size (pt) chosen at import; scales rasterized PDF vs note typography (baseline 20).
      */

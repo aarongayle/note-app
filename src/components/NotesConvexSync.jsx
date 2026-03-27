@@ -37,6 +37,8 @@ function buildUpdateNotePayload(note) {
     })),
     imageEmbeds: note.imageEmbeds ?? [],
     pdfBackgroundFileId: note.pdfBackgroundFileId ?? null,
+    epubBackgroundFileId: note.epubBackgroundFileId ?? null,
+    epubContentWidth: note.epubContentWidth ?? null,
     scrollHeight: persistedScrollHeightForNote(note),
     zoom: clampZoomForServer(note.zoom ?? 1),
     updatedAt: note.updatedAt,
@@ -71,6 +73,8 @@ function rowsToStoreState(rows) {
         textBoxes: row.textBoxes ?? [],
         imageEmbeds: row.imageEmbeds ?? [],
         pdfBackgroundFileId: row.pdfBackgroundFileId,
+        epubBackgroundFileId: row.epubBackgroundFileId,
+        epubContentWidth: row.epubContentWidth,
         importDocFontSizePt: row.importDocFontSizePt,
         importEpubMargins:
           row.importEpubMargins ??

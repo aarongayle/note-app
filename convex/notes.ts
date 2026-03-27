@@ -40,8 +40,11 @@ const importEpubMarginsValidator = v.object({
   left: v.number(),
 });
 
-const EPUB_MARGIN_MIN = 24;
+const EPUB_MARGIN_MIN = 0;
 const EPUB_MARGIN_MAX = 120;
+
+const EPUB_WIDTH_MIN = 200;
+const EPUB_WIDTH_MAX = 1600;
 
 function clampEpubMarginSide(n: number): number {
   return Math.min(EPUB_MARGIN_MAX, Math.max(EPUB_MARGIN_MIN, n));
@@ -180,6 +183,8 @@ export const createNote = mutation({
     template: v.string(),
     imageEmbeds: v.optional(v.array(imageEmbedFieldValidator)),
     pdfBackgroundFileId: v.optional(v.id("files")),
+    epubBackgroundFileId: v.optional(v.id("files")),
+    epubContentWidth: v.optional(v.number()),
     importDocFontSizePt: v.optional(v.number()),
     importEpubMarginPt: v.optional(v.number()),
     importEpubMargins: v.optional(importEpubMarginsValidator),
@@ -195,16 +200,20 @@ export const createNote = mutation({
     await assertParentBelongsToUser(ctx, userId, args.parentClientId);
     const embeds = args.imageEmbeds ?? [];
     const pdfId = args.pdfBackgroundFileId;
+    const epubId = args.epubBackgroundFileId;
     const fileIds: Id<"files">[] = [...embeds.map((e) => e.fileId)];
     if (pdfId !== undefined) {
       fileIds.push(pdfId);
+    }
+    if (epubId !== undefined) {
+      fileIds.push(epubId);
     }
     if (fileIds.length > 0) {
       await assertFilesOwnedByUser(ctx, userId, fileIds);
     }
     const now = args.createdAt;
     const template =
-      pdfId !== undefined ? "blank" : args.template;
+      pdfId !== undefined || epubId !== undefined ? "blank" : args.template;
     const fontPt =
       args.importDocFontSizePt !== undefined
         ? Math.min(48, Math.max(10, args.importDocFontSizePt))
@@ -231,6 +240,10 @@ export const createNote = mutation({
       textBlocks: [],
       imageEmbeds: embeds.length > 0 ? embeds : undefined,
       ...(pdfId !== undefined ? { pdfBackgroundFileId: pdfId } : {}),
+      ...(epubId !== undefined ? { epubBackgroundFileId: epubId } : {}),
+      ...(epubId !== undefined && args.epubContentWidth !== undefined
+        ? { epubContentWidth: Math.min(EPUB_WIDTH_MAX, Math.max(EPUB_WIDTH_MIN, args.epubContentWidth)) }
+        : {}),
       ...(fontPt !== undefined ? { importDocFontSizePt: fontPt } : {}),
       ...(epubMarginsRow !== undefined
         ? { importEpubMargins: epubMarginsRow }
@@ -286,6 +299,8 @@ export const updateNote = mutation({
     textBoxes: v.array(textBoxValidator),
     imageEmbeds: v.array(imageEmbedFieldValidator),
     pdfBackgroundFileId: v.union(v.null(), v.id("files")),
+    epubBackgroundFileId: v.union(v.null(), v.id("files")),
+    epubContentWidth: v.union(v.null(), v.number()),
     scrollHeight: v.number(),
     zoom: v.number(),
     updatedAt: v.number(),
@@ -302,6 +317,9 @@ export const updateNote = mutation({
     const fileIds: Id<"files">[] = args.imageEmbeds.map((e) => e.fileId);
     if (args.pdfBackgroundFileId !== null) {
       fileIds.push(args.pdfBackgroundFileId);
+    }
+    if (args.epubBackgroundFileId !== null) {
+      fileIds.push(args.epubBackgroundFileId);
     }
     if (fileIds.length > 0) {
       await assertFilesOwnedByUser(ctx, userId, fileIds);
@@ -339,6 +357,16 @@ export const updateNote = mutation({
         args.pdfBackgroundFileId === null
           ? undefined
           : args.pdfBackgroundFileId,
+      epubBackgroundFileId:
+        args.epubBackgroundFileId === null
+          ? undefined
+          : args.epubBackgroundFileId,
+      epubContentWidth:
+        args.epubContentWidth === null
+          ? undefined
+          : args.epubContentWidth != null
+            ? Math.min(EPUB_WIDTH_MAX, Math.max(EPUB_WIDTH_MIN, args.epubContentWidth))
+            : undefined,
       scrollHeight: args.scrollHeight,
       zoom: z,
       updatedAt: args.updatedAt,

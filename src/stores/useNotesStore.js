@@ -264,6 +264,8 @@ const useNotesStore = create((set, get) => ({
    * @param {object} [media]
    * @param {Array<{ id: string, fileId: string, x: number, y: number, width: number, height: number, rotation: number }>} [media.imageEmbeds]
    * @param {string} [media.pdfBackgroundFileId]
+   * @param {string} [media.epubBackgroundFileId]
+   * @param {number} [media.epubContentWidth]
    * @param {number} [media.importDocFontSizePt]
    * @param {{ top: number, right: number, bottom: number, left: number }} [media.importEpubMargins]
    */
@@ -280,10 +282,12 @@ const useNotesStore = create((set, get) => ({
       ? [...media.imageEmbeds]
       : []
     const pdfBackgroundFileId = media?.pdfBackgroundFileId
+    const epubBackgroundFileId = media?.epubBackgroundFileId
+    const epubContentWidth = media?.epubContentWidth
     const importDocFontSizePt = media?.importDocFontSizePt
     const importEpubMargins = media?.importEpubMargins
     const noteTemplate =
-      pdfBackgroundFileId ? 'blank' : template
+      (pdfBackgroundFileId || epubBackgroundFileId) ? 'blank' : template
 
     const note = {
       id,
@@ -296,6 +300,8 @@ const useNotesStore = create((set, get) => ({
       textBoxes: [],
       imageEmbeds,
       pdfBackgroundFileId,
+      epubBackgroundFileId,
+      epubContentWidth,
       importDocFontSizePt,
       importEpubMargins,
       scrollHeight: MIN_NOTE_SCROLL_HEIGHT,
@@ -328,6 +334,8 @@ const useNotesStore = create((set, get) => ({
       template: noteTemplate,
       imageEmbeds: imageEmbeds.length > 0 ? imageEmbeds : undefined,
       pdfBackgroundFileId,
+      epubBackgroundFileId,
+      epubContentWidth,
       importDocFontSizePt,
       importEpubMargins,
     })

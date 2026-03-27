@@ -39,8 +39,15 @@ import { useQuery } from 'convex/react'
 import { api } from '../../convex/_generated/api.js'
 import { v4 as uuidv4 } from 'uuid'
 import PdfNoteBackground from './PdfNoteBackground.jsx'
+import EpubNoteBackground from './EpubNoteBackground.jsx'
 import ImageEmbedsLayer from './ImageEmbedsLayer.jsx'
 import TextBoxesLayer from './TextBoxesLayer.jsx'
+
+/**
+ * Module-level cache of scroll positions per note, so toggling split view
+ * (which unmounts/remounts Canvas) can restore where the user was.
+ */
+const scrollPositionCache = new Map()
 
 /** Ray-casting point-in-polygon test for lasso hit detection. */
 function pointInPolygon(px, py, polygon) {
@@ -194,7 +201,18 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     return n.zoom ?? 1
   })
 
-  /** Scroll the note viewport to a logical (pre-zoom) Y coordinate. Used by PDF internal links. */
+  // Keep the same logical content at the top of the viewport when zoom changes.
+  const prevZoomRef = useRef(noteZoom)
+  useLayoutEffect(() => {
+    const prev = prevZoomRef.current
+    prevZoomRef.current = noteZoom
+    if (prev === noteZoom) return
+    const container = containerRef.current
+    if (!container) return
+    container.scrollTop = container.scrollTop * (noteZoom / prev)
+  }, [noteZoom])
+
+  /** Scroll the note viewport to a logical (pre-zoom) Y coordinate. Used by PDF/EPUB internal links. */
   const handlePdfScrollTo = useCallback((yLogical) => {
     const container = containerRef.current
     if (container) {
@@ -220,11 +238,12 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     if (!note) return 0
     let max = 0
 
-    // PDF/EPUB background: page fills paperWidth * docScale logical pixels.
     if (note.pdfBackgroundFileId) {
       const docScale = (note.importDocFontSizePt ?? KEYBOARD_FONT_SIZE_PX) / KEYBOARD_FONT_SIZE_PX
-      // paperWidthForPdf = layoutW (set below); docScale adjusts for imported font size.
       max = Math.max(max, layoutW * docScale)
+    }
+    if (note.epubBackgroundFileId) {
+      max = Math.max(max, note.epubContentWidth ?? 600)
     }
 
     for (const s of note.strokes) {
@@ -243,12 +262,18 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     }
     return max
   // eslint-disable-next-line react-hooks/exhaustive-deps -- recompute when content or layout changes
-  }, [note?.strokes, note?.imageEmbeds, note?.textBoxes, note?.pdfBackgroundFileId, note?.importDocFontSizePt, layoutW])
+  }, [note?.strokes, note?.imageEmbeds, note?.textBoxes, note?.pdfBackgroundFileId, note?.epubBackgroundFileId, note?.epubContentWidth, note?.importDocFontSizePt, layoutW])
 
   const pdfUrl = useQuery(
     api.files.getDownloadUrl,
     note?.pdfBackgroundFileId != null
       ? { fileId: note.pdfBackgroundFileId }
+      : 'skip'
+  )
+  const epubUrl = useQuery(
+    api.files.getDownloadUrl,
+    note?.epubBackgroundFileId != null
+      ? { fileId: note.epubBackgroundFileId }
       : 'skip'
   )
 
@@ -340,6 +365,8 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   const syncScrollExtent = useCallback(() => {
     const container = containerRef.current
     if (!container || !scrollSyncNoteId) return
+    // Always save scroll position (even in passive modes) for restore on remount
+    scrollPositionCache.set(scrollSyncNoteId, container.scrollTop)
     if (isPassive) return
     const n = useNotesStore.getState().items[scrollSyncNoteId]
     if (!n || n.type !== 'note') return
@@ -385,9 +412,26 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     const container = containerRef.current
     if (!container || !note) return
     container.addEventListener('scroll', syncScrollExtent, { passive: true })
-    return () => container.removeEventListener('scroll', syncScrollExtent)
+    return () => {
+      if (note?.id) scrollPositionCache.set(note.id, container.scrollTop)
+      container.removeEventListener('scroll', syncScrollExtent)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- note.id controls when to rebind; fresh state read inside handler
   }, [note?.id, syncScrollExtent])
+
+  // Restore scroll position before first paint after remount (e.g. split-view
+  // toggle). The spacer div already has the correct min-height from
+  // note.scrollHeight, so the container can accept the saved scrollTop even
+  // before child effects populate EPUB / PDF content.
+  useLayoutEffect(() => {
+    const container = containerRef.current
+    if (!container || !note?.id) return
+    const saved = scrollPositionCache.get(note.id)
+    if (saved != null && saved > 0) {
+      container.scrollTop = saved
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restore only on mount for this note
+  }, [note?.id])
 
   useLayoutEffect(() => {
     syncScrollExtent()
@@ -978,7 +1022,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
 
   const templateStyle = useMemo(() => {
     if (!note) return {}
-    if (note.pdfBackgroundFileId) return {}
+    if (note.pdfBackgroundFileId || note.epubBackgroundFileId) return {}
     const styles = templateStylesForSpacing(LINE_SPACING)
     return styles[note.template] || {}
   }, [note])
@@ -1135,6 +1179,16 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
             paperWidth={paperWidthForPdf}
             noteZoom={noteZoom}
             importDocFontSizePt={note.importDocFontSizePt}
+            noteId={note.id}
+            textSelectable={isSelect}
+            onScrollTo={handlePdfScrollTo}
+          />
+          <EpubNoteBackground
+            epubUrl={epubUrl ?? null}
+            paperWidth={note.epubContentWidth ?? 600}
+            noteZoom={noteZoom}
+            importDocFontSizePt={note.importDocFontSizePt}
+            importEpubMargins={note.importEpubMargins}
             noteId={note.id}
             textSelectable={isSelect}
             onScrollTo={handlePdfScrollTo}

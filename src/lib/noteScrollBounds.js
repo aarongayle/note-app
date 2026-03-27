@@ -62,12 +62,12 @@ export function contentBottomForNote(note) {
  * @param {{ strokes?: unknown[], textBlocks?: { content: string }[] }} note
  */
 export function persistedScrollHeightForNote(note) {
-  if (note.pdfBackgroundFileId) {
+  if (note.pdfBackgroundFileId || note.epubBackgroundFileId) {
     const contentBottom = contentBottomForNote(note)
-    const fromPdf = note.scrollHeight ?? MIN_NOTE_SCROLL_HEIGHT
+    const fromBackground = note.scrollHeight ?? MIN_NOTE_SCROLL_HEIGHT
     return Math.max(
       MIN_NOTE_SCROLL_HEIGHT,
-      Math.ceil(Math.max(fromPdf, contentBottom + BOTTOM_CONTENT_PAD))
+      Math.ceil(Math.max(fromBackground, contentBottom + BOTTOM_CONTENT_PAD))
     )
   }
   const bottom = contentBottomForNote(note)

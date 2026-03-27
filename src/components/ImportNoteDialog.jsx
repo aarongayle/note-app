@@ -9,11 +9,11 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 const FONT_MIN = 12
 const FONT_MAX = 36
-const MARGIN_MIN = 36
+const MARGIN_MIN = 0
 const MARGIN_MAX = 120
-
-/** LETTER width pt for preview proportion */
-const LETTER_W_PT = 612
+const EPUB_WIDTH_MIN = 300
+const EPUB_WIDTH_MAX = 1200
+const EPUB_WIDTH_DEFAULT = 600
 
 function collectFoldersFlat(state) {
   const { items, rootIds } = state
@@ -40,7 +40,7 @@ function collectFoldersFlat(state) {
 }
 
 /**
- * @param {{ file: File; kind: 'image' | 'pdf' | 'epub'; defaultName: string; progressMsg?: string; onClose: () => void; onConfirm: (opts: { noteName: string; parentId: string | null; documentFontSizePt: number; epubMarginsPt: { top: number; right: number; bottom: number; left: number } }) => void | Promise<void> }} props
+ * @param {{ file: File; kind: 'image' | 'pdf' | 'epub'; defaultName: string; progressMsg?: string; onClose: () => void; onConfirm: (opts: { noteName: string; parentId: string | null; documentFontSizePt: number; epubMarginsPt: { top: number; right: number; bottom: number; left: number }; epubContentWidth: number }) => void | Promise<void> }} props
  */
 export default function ImportNoteDialog({
   file,
@@ -62,11 +62,12 @@ export default function ImportNoteDialog({
     KEYBOARD_FONT_SIZE_PX
   )
   const [epubMarginsPt, setEpubMarginsPt] = useState({
-    top: 72,
-    right: 72,
-    bottom: 72,
-    left: 72,
+    top: 32,
+    right: 32,
+    bottom: 32,
+    left: 32,
   })
+  const [epubContentWidth, setEpubContentWidth] = useState(EPUB_WIDTH_DEFAULT)
   const [busy, setBusy] = useState(false)
   const [imageObjectUrl, setImageObjectUrl] = useState(null)
   const pdfPreviewRef = useRef(null)
@@ -133,6 +134,7 @@ export default function ImportNoteDialog({
         parentId,
         documentFontSizePt,
         epubMarginsPt,
+        epubContentWidth,
       })
       onClose()
     } catch (err) {
@@ -145,15 +147,14 @@ export default function ImportNoteDialog({
     }
   }
 
-  const previewMarginScale =
-    kind === 'epub' ? 200 / LETTER_W_PT : 0
+  const previewScale = kind === 'epub' ? 200 / epubContentWidth : 0
   const previewPad =
     kind === 'epub'
       ? {
-          paddingTop: Math.round(epubMarginsPt.top * previewMarginScale),
-          paddingRight: Math.round(epubMarginsPt.right * previewMarginScale),
-          paddingBottom: Math.round(epubMarginsPt.bottom * previewMarginScale),
-          paddingLeft: Math.round(epubMarginsPt.left * previewMarginScale),
+          paddingTop: Math.round(epubMarginsPt.top * previewScale * 1.333),
+          paddingRight: Math.round(epubMarginsPt.right * previewScale * 1.333),
+          paddingBottom: Math.round(epubMarginsPt.bottom * previewScale * 1.333),
+          paddingLeft: Math.round(epubMarginsPt.left * previewScale * 1.333),
         }
       : {}
 
@@ -226,39 +227,59 @@ export default function ImportNoteDialog({
           </div>
 
           {kind === 'epub' && (
-            <div className="space-y-3">
-              <p className="text-xs font-medium text-text-secondary">
-                EPUB → PDF margins (pt)
-              </p>
-              {(
-                [
-                  ['top', 'Top'],
-                  ['right', 'Right'],
-                  ['bottom', 'Bottom'],
-                  ['left', 'Left'],
-                ]
-              ).map(([key, label]) => (
-                <div key={key}>
-                  <label className="block text-xs font-medium text-text-secondary mb-1.5">
-                    {label} ({epubMarginsPt[key]} pt)
-                  </label>
-                  <input
-                    type="range"
-                    min={MARGIN_MIN}
-                    max={MARGIN_MAX}
-                    step={2}
-                    value={epubMarginsPt[key]}
-                    onChange={(e) =>
-                      setEpubMarginsPt((prev) => ({
-                        ...prev,
-                        [key]: Number(e.target.value),
-                      }))
-                    }
-                    className="w-full accent-accent"
-                  />
-                </div>
-              ))}
-            </div>
+            <>
+              <div>
+                <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                  Content width ({epubContentWidth} px) — fixed layout width for
+                  the EPUB; annotations lock to this grid
+                </label>
+                <input
+                  type="range"
+                  min={EPUB_WIDTH_MIN}
+                  max={EPUB_WIDTH_MAX}
+                  step={10}
+                  value={epubContentWidth}
+                  onChange={(e) =>
+                    setEpubContentWidth(Number(e.target.value))
+                  }
+                  className="w-full accent-accent"
+                />
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-xs font-medium text-text-secondary">
+                  Content margins (pt)
+                </p>
+                {(
+                  [
+                    ['top', 'Top'],
+                    ['right', 'Right'],
+                    ['bottom', 'Bottom'],
+                    ['left', 'Left'],
+                  ]
+                ).map(([key, label]) => (
+                  <div key={key}>
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                      {label} ({epubMarginsPt[key]} pt)
+                    </label>
+                    <input
+                      type="range"
+                      min={MARGIN_MIN}
+                      max={MARGIN_MAX}
+                      step={2}
+                      value={epubMarginsPt[key]}
+                      onChange={(e) =>
+                        setEpubMarginsPt((prev) => ({
+                          ...prev,
+                          [key]: Number(e.target.value),
+                        }))
+                      }
+                      className="w-full accent-accent"
+                    />
+                  </div>
+                ))}
+              </div>
+            </>
           )}
 
           <div>
@@ -285,19 +306,20 @@ export default function ImportNoteDialog({
               )}
               {kind === 'epub' && (
                 <div
-                  className="w-full max-w-[200px] mx-auto bg-white text-neutral-800 rounded border border-border/60 shadow-sm"
+                  className="mx-auto bg-white text-neutral-800 rounded border border-border/60 shadow-sm"
                   style={{
+                    width: `${Math.min(200, Math.round(epubContentWidth * previewScale))}px`,
                     ...previewPad,
                     fontSize: `${Math.min(14, documentFontSizePt * 0.55)}px`,
                     lineHeight: 1.45,
                   }}
                 >
                   <p className="text-neutral-500 text-[10px] uppercase tracking-wide mb-1">
-                    Approximate EPUB page
+                    {epubContentWidth}px content area
                   </p>
                   <p>
-                    Sample body text at your chosen size. Margins reflect the
-                    EPUB conversion layout (Letter page).
+                    Sample body text at your chosen size and width. Margins
+                    and width are locked after import.
                   </p>
                 </div>
               )}

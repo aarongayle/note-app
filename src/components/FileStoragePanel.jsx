@@ -10,11 +10,7 @@ import {
   stripExtension,
 } from '../lib/fileToNote.js'
 import { KEYBOARD_FONT_SIZE_PX } from '../lib/canvasConstants.js'
-import { convertEpubToPdfInBrowser } from '../lib/epubToPdfBrowser.js'
-import { convertEpubViaStreamingService } from '../lib/epubToPdfService.js'
 import ImportNoteDialog from './ImportNoteDialog.jsx'
-
-const EPUB_SERVICE_URL = import.meta.env.VITE_EPUB_PDF_SERVICE_URL
 
 function detectImportKind(file) {
   const lower = file.name.toLowerCase()
@@ -72,27 +68,17 @@ export default function FileStoragePanel() {
     parentId,
     documentFontSizePt,
     epubMarginsPt,
+    epubContentWidth,
   }) {
     if (!importSession) return
     const { file, kind } = importSession
 
     if (kind === 'epub') {
-      const converterOpts = {
-        fontSizePt: documentFontSizePt,
-        marginsPt: epubMarginsPt,
-        onProgress: setProgressMsg,
-      }
-      const pdfBlob = EPUB_SERVICE_URL
-        ? await convertEpubViaStreamingService(EPUB_SERVICE_URL, file, converterOpts)
-        : await convertEpubToPdfInBrowser(file, converterOpts)
-      setProgressMsg('Uploading…')
-      const pdfFileId = await uploadBlob(
-        pdfBlob,
-        file.name.replace(/\.epub$/i, '.pdf'),
-        'application/pdf',
-      )
+      setProgressMsg('Uploading EPUB…')
+      const epubFileId = await uploadBlob(file, file.name, 'application/epub+zip')
       createNote(noteName, 'blank', parentId, {
-        pdfBackgroundFileId: pdfFileId,
+        epubBackgroundFileId: epubFileId,
+        epubContentWidth,
         importDocFontSizePt: documentFontSizePt,
         importEpubMargins: epubMarginsPt,
       })

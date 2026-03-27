@@ -155,3 +155,10 @@ body {
 .pdf-text-selectable .pdfAnnotationLayer .linkAnnotation > a:hover {
   background-color: rgb(255 255 0 / 0.25);
 }
+
+/* EPUB select mode: make text selectable and links clickable */
+.epub-text-selectable {
+  pointer-events: auto !important;
+  user-select: text;
+  cursor: text;
+}
