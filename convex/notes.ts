@@ -342,10 +342,14 @@ export const updateNote = mutation({
       nextEpubMargins = undefined;
       nextEpubMarginPt = undefined;
     }
+    const textBoxesWithContent = args.textBoxes.filter(
+      (b) => b.content.trim().length > 0,
+    );
     await ctx.db.patch(row._id, {
       strokes: args.strokes,
       textBlocks: args.textBlocks,
-      textBoxes: args.textBoxes.length > 0 ? args.textBoxes : undefined,
+      textBoxes:
+        textBoxesWithContent.length > 0 ? textBoxesWithContent : undefined,
       imageEmbeds: args.imageEmbeds.length > 0 ? args.imageEmbeds : undefined,
       pdfBackgroundFileId:
         args.pdfBackgroundFileId === null

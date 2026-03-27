@@ -7,6 +7,7 @@ import {
   persistedScrollHeightForNote,
 } from '../lib/noteScrollBounds.js'
 import { seedViewStateFromServer } from '../lib/noteViewState.js'
+import { textBoxHasVisibleContent } from '../lib/textBoxContent.js'
 import useNotesStore, {
   clearNotesPersistence,
   configureNotesPersistence,
@@ -22,13 +23,15 @@ function buildUpdateNotePayload(note) {
       id: b.id,
       content: b.content,
     })),
-    textBoxes: (note.textBoxes ?? []).map((b) => ({
-      id: b.id,
-      x: b.x,
-      y: b.y,
-      width: b.width,
-      content: b.content,
-    })),
+    textBoxes: (note.textBoxes ?? [])
+      .filter((b) => textBoxHasVisibleContent(b.content))
+      .map((b) => ({
+        id: b.id,
+        x: b.x,
+        y: b.y,
+        width: b.width,
+        content: b.content.trim(),
+      })),
     imageEmbeds: note.imageEmbeds ?? [],
     pdfBackgroundFileId: note.pdfBackgroundFileId ?? null,
     epubBackgroundFileId: note.epubBackgroundFileId ?? null,
@@ -72,7 +75,9 @@ function rowsToStoreState(rows) {
         template: row.template ?? 'blank',
         strokes: row.strokes ?? [],
         textBlocks: row.textBlocks ?? [],
-        textBoxes: row.textBoxes ?? [],
+        textBoxes: (row.textBoxes ?? []).filter((b) =>
+          textBoxHasVisibleContent(b.content)
+        ),
         imageEmbeds: row.imageEmbeds ?? [],
         pdfBackgroundFileId: row.pdfBackgroundFileId,
         epubBackgroundFileId: row.epubBackgroundFileId,

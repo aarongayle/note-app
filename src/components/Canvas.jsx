@@ -1347,9 +1347,13 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     [note, bumpToolbarToThisPane, handleStartEditTextBox]
   )
 
-  const handleTextBoxEditBlur = useCallback((id) => {
-    setEditingTextBoxId((prev) => (prev === id ? null : prev))
-  }, [])
+  const handleTextBoxEditBlur = useCallback(
+    (id) => {
+      cleanUpEmptyEditingTextBox(id)
+      setEditingTextBoxId((prev) => (prev === id ? null : prev))
+    },
+    [cleanUpEmptyEditingTextBox]
+  )
 
   /**
    * Handles a tap/click on empty canvas space while in text (keyboard) mode:
