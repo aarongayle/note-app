@@ -30,6 +30,18 @@ export function createImageEmbed(fileId, size, origin = { x: 40, y: 40 }) {
     width: size.width,
     height: size.height,
     rotation: 0,
+    cropLeft: 0,
+    cropTop: 0,
+    cropRight: 0,
+    cropBottom: 0,
+    skewNwX: 0,
+    skewNwY: 0,
+    skewNeX: 0,
+    skewNeY: 0,
+    skewSeX: 0,
+    skewSeY: 0,
+    skewSwX: 0,
+    skewSwY: 0,
   }
 }
 

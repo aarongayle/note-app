@@ -169,32 +169,96 @@ export function unionBBoxOfStrokes(strokes, sortedIndices) {
 export const LASSO_ROTATE_OFFSET = 32
 export const LASSO_HANDLE_RADIUS = 9
 
-const HANDLE_HIT_RADIUS = 12
+/** Extra hit padding around lasso / embed handles (note space, before `/ noteZoom`). */
+export const HANDLE_HIT_RADIUS = 12
 
 /**
- * Hit-test transform UI in note space. Returns `rotate`, `scale`, `move`, or null.
+ * Invisible SVG shapes for pointer capture — same geometry as {@link hitTransformHandle}.
+ * Draw last (above image hit polygons) with pointer-events: auto.
+ * @param {{ minX: number; minY: number; maxX: number; maxY: number }} bbox
+ * @param {number} [noteZoom=1]
+ */
+export function transformHandleHitShapes(bbox, noteZoom = 1) {
+  const z = Math.max(noteZoom, 0.05)
+  const { minX: mx, minY: my, maxX: Mx, maxY: My } = bbox
+  const cx = (mx + Mx) / 2
+  const stemLen = LASSO_ROTATE_OFFSET / z
+  const hy = my - stemLen
+  /** Slightly past corner so the visible handle ring (outside the image) still hits. */
+  const scaleR = (HANDLE_HIT_RADIUS + 4) / z
+  const knobR = (LASSO_HANDLE_RADIUS + HANDLE_HIT_RADIUS + 4) / z
+  const stemW = 16 / z
+  return {
+    moveRect: { x: mx, y: my, w: Mx - mx, h: My - my },
+    scaleCorners: [
+      [mx, my],
+      [Mx, my],
+      [Mx, My],
+      [mx, My],
+    ],
+    scaleR,
+    rotateKnob: { cx, cy: hy, r: knobR },
+    rotateStem: {
+      x: cx - stemW / 2,
+      y: hy,
+      w: stemW,
+      h: Math.max(0, my - hy),
+    },
+  }
+}
+
+/**
  * @param {number} x
  * @param {number} y
  * @param {{ minX: number; minY: number; maxX: number; maxY: number }} bbox
- * @returns {'rotate' | 'scale' | 'move' | null}
+ * @param {number} [noteZoom=1]
  */
-export function hitTransformHandle(x, y, bbox) {
+export function hitScaleCornersOnBbox(x, y, bbox, noteZoom = 1) {
+  const z = Math.max(noteZoom, 0.05)
   const { minX: mx, minY: my, maxX: Mx, maxY: My } = bbox
-  const cx = (mx + Mx) / 2
-  const rx = cx
-  const ry = my - LASSO_ROTATE_OFFSET
-  if (Math.hypot(x - rx, y - ry) < HANDLE_HIT_RADIUS + 8) return 'rotate'
-
+  const scaleHitR = (HANDLE_HIT_RADIUS + 4) / z
   const corners = [
     [mx, my],
     [Mx, my],
     [Mx, My],
     [mx, My],
   ]
-  for (const [hx, hy] of corners) {
-    if (Math.hypot(x - hx, y - hy) < HANDLE_HIT_RADIUS) return 'scale'
+  for (const [hx, hyC] of corners) {
+    if (Math.hypot(x - hx, y - hyC) < scaleHitR) return true
   }
+  return false
+}
+
+/**
+ * Rotate handle + interior move (no corner scale).
+ * @returns {'rotate' | 'move' | null}
+ */
+export function hitTransformHandleRotateMove(x, y, bbox, noteZoom = 1) {
+  const z = Math.max(noteZoom, 0.05)
+  const { minX: mx, minY: my, maxX: Mx, maxY: My } = bbox
+  const cx = (mx + Mx) / 2
+  const stemLen = LASSO_ROTATE_OFFSET / z
+  const hy = my - stemLen
+  const knobR = (LASSO_HANDLE_RADIUS + HANDLE_HIT_RADIUS + 4) / z
+  const stemW = 16 / z
+
+  if (Math.hypot(x - cx, y - hy) < knobR) return 'rotate'
+  if (Math.abs(x - cx) <= stemW / 2 && y >= hy && y <= my) return 'rotate'
 
   if (x >= mx && x <= Mx && y >= my && y <= My) return 'move'
   return null
+}
+
+/**
+ * Hit-test transform UI in note space. Returns `rotate`, `scale`, `move`, or null.
+ * Radii and offsets shrink in note space as `noteZoom` increases so hit targets stay ~constant on screen.
+ * @param {number} x
+ * @param {number} y
+ * @param {{ minX: number; minY: number; maxX: number; maxY: number }} bbox
+ * @param {number} [noteZoom=1]
+ * @returns {'rotate' | 'scale' | 'move' | null}
+ */
+export function hitTransformHandle(x, y, bbox, noteZoom = 1) {
+  if (hitScaleCornersOnBbox(x, y, bbox, noteZoom)) return 'scale'
+  return hitTransformHandleRotateMove(x, y, bbox, noteZoom)
 }

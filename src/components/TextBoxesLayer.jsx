@@ -2,6 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useCallback, useState } from 'react
 import { KEYBOARD_FONT_SIZE_PX, LINE_SPACING, CANVAS_TYPING_INK } from '../lib/canvasConstants.js'
 
 const RESIZE_HANDLE_W = 8
+/** ~screen px — actual size is divided by zoom inside the scaled canvas. */
+const UI_HANDLE = 20
+const UI_HANDLE_OFF = 10
 
 /**
  * Renders all textboxes for a note inside the scaled-inner coordinate space.
@@ -12,6 +15,11 @@ const RESIZE_HANDLE_W = 8
  *   editingId: string | null,
  *   selectedIds: string[],
  *   isTextMode: boolean,
+ *   isSelectMode: boolean,
+ *   noteZoom: number,
+ *   onSelectTextBox: (id: string) => void,
+ *   onEditFromSelect: (id: string) => void,
+ *   onTextBoxEditBlur: (id: string) => void,
  *   onStartEdit: (id: string) => void,
  *   onCommitEdit: (id: string, content: string) => void,
  *   onDelete: (id: string) => void,
@@ -26,6 +34,11 @@ export default function TextBoxesLayer({
   editingId,
   selectedIds,
   isTextMode,
+  isSelectMode,
+  noteZoom = 1,
+  onSelectTextBox,
+  onEditFromSelect,
+  onTextBoxEditBlur,
   onStartEdit,
   onCommitEdit,
   onDelete,
@@ -36,10 +49,12 @@ export default function TextBoxesLayer({
 }) {
   if (!textBoxes || textBoxes.length === 0) return null
 
+  const layerZ = isTextMode || isSelectMode ? 6 : undefined
+
   return (
     <div
       className="absolute left-0 top-0 pointer-events-none"
-      style={{ width: 0, height: 0 }}
+      style={{ width: 0, height: 0, zIndex: layerZ }}
     >
       {textBoxes.map((tb) => (
         <TextBox
@@ -48,6 +63,11 @@ export default function TextBoxesLayer({
           isEditing={editingId === tb.id}
           isSelected={selectedIds.includes(tb.id)}
           isTextMode={isTextMode}
+          isSelectMode={isSelectMode}
+          noteZoom={noteZoom}
+          onSelectTextBox={onSelectTextBox}
+          onEditFromSelect={onEditFromSelect}
+          onTextBoxEditBlur={onTextBoxEditBlur}
           onStartEdit={onStartEdit}
           onCommitEdit={onCommitEdit}
           onDelete={onDelete}
@@ -66,6 +86,11 @@ function TextBox({
   isEditing,
   isSelected,
   isTextMode,
+  isSelectMode,
+  noteZoom,
+  onSelectTextBox,
+  onEditFromSelect,
+  onTextBoxEditBlur,
   onStartEdit,
   onCommitEdit,
   onDelete,
@@ -77,6 +102,12 @@ function TextBox({
   const taRef = useRef(null)
   const divRef = useRef(null)
   const [isHovered, setIsHovered] = useState(false)
+  const s = 1 / Math.max(noteZoom, 0.05)
+  const h = UI_HANDLE * s
+  const off = UI_HANDLE_OFF * s
+  const borderW = 2 * s
+  const resizeW = RESIZE_HANDLE_W * s
+  const resizeH = 24 * s
 
   // Focus textarea when entering edit mode. useLayoutEffect runs synchronously
   // after the DOM update, before pointerup/click can steal focus away.
@@ -103,12 +134,30 @@ function TextBox({
 
   const handlePointerDown = useCallback(
     (e) => {
+      if (isSelectMode) {
+        e.stopPropagation()
+        onSelectTextBox?.(textBox.id)
+        return
+      }
       if (!isTextMode) return
       e.stopPropagation()
       onStartEdit(textBox.id)
     },
-    [isTextMode, textBox.id, onStartEdit]
+    [isTextMode, isSelectMode, textBox.id, onStartEdit, onSelectTextBox]
   )
+
+  const handleTextAreaPointerDownSelect = useCallback(
+    (e) => {
+      if (!isSelectMode) return
+      e.stopPropagation()
+      onEditFromSelect?.(textBox.id)
+    },
+    [isSelectMode, textBox.id, onEditFromSelect]
+  )
+
+  const handleTextAreaBlur = useCallback(() => {
+    onTextBoxEditBlur?.(textBox.id)
+  }, [textBox.id, onTextBoxEditBlur])
 
   const handleChange = useCallback(
     (e) => {
@@ -231,7 +280,7 @@ function TextBox({
         left: textBox.x,
         top: textBox.y,
         width: textBox.width,
-        pointerEvents: isTextMode ? 'auto' : 'none',
+        pointerEvents: isTextMode || isSelectMode ? 'auto' : 'none',
         boxSizing: 'border-box',
         transform: rotation !== 0 ? `rotate(${rotation}deg)` : undefined,
         transformOrigin: 'center center',
@@ -249,23 +298,28 @@ function TextBox({
             title="Move"
             style={{
               position: 'absolute',
-              top: -10,
-              left: -10,
-              width: 20,
-              height: 20,
+              top: -off,
+              left: -off,
+              width: h,
+              height: h,
               borderRadius: '50%',
               background: 'rgb(99 102 241)',
-              border: '2px solid white',
+              border: `${borderW}px solid white`,
               cursor: 'grab',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               pointerEvents: 'auto',
               zIndex: 10,
-              boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+              boxShadow: `0 ${1 * s}px ${3 * s}px rgba(0,0,0,0.2)`,
             }}
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" style={{ pointerEvents: 'none' }}>
+            <svg
+              width={10 * s}
+              height={10 * s}
+              viewBox="0 0 10 10"
+              style={{ pointerEvents: 'none' }}
+            >
               <path
                 d="M5 1v8M1 5h8M3 2.5L5 1l2 1.5M3 7.5L5 9l2-1.5M2.5 3L1 5l1.5 2M7.5 3L9 5l-1.5 2"
                 fill="none"
@@ -283,24 +337,29 @@ function TextBox({
             title="Rotate"
             style={{
               position: 'absolute',
-              top: -10,
+              top: -off,
               left: '50%',
               transform: 'translateX(-50%)',
-              width: 20,
-              height: 20,
+              width: h,
+              height: h,
               borderRadius: '50%',
               background: 'rgb(99 102 241)',
-              border: '2px solid white',
+              border: `${borderW}px solid white`,
               cursor: 'grab',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               pointerEvents: 'auto',
               zIndex: 10,
-              boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+              boxShadow: `0 ${1 * s}px ${3 * s}px rgba(0,0,0,0.2)`,
             }}
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" style={{ pointerEvents: 'none' }}>
+            <svg
+              width={10 * s}
+              height={10 * s}
+              viewBox="0 0 10 10"
+              style={{ pointerEvents: 'none' }}
+            >
               <path
                 d="M8.5 5A3.5 3.5 0 1 1 6.5 1.8"
                 fill="none"
@@ -326,13 +385,13 @@ function TextBox({
             title="Delete text box"
             style={{
               position: 'absolute',
-              top: -10,
-              right: -10,
-              width: 20,
-              height: 20,
+              top: -off,
+              right: -off,
+              width: h,
+              height: h,
               borderRadius: '50%',
               background: 'rgb(99 102 241)',
-              border: '2px solid white',
+              border: `${borderW}px solid white`,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -340,10 +399,10 @@ function TextBox({
               pointerEvents: 'auto',
               padding: 0,
               color: 'white',
-              fontSize: 10,
+              fontSize: 10 * s,
               fontWeight: 'bold',
               zIndex: 10,
-              boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+              boxShadow: `0 ${1 * s}px ${3 * s}px rgba(0,0,0,0.2)`,
             }}
           >
             ✕
@@ -357,6 +416,8 @@ function TextBox({
         readOnly={!isEditing}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
+        onPointerDown={handleTextAreaPointerDownSelect}
+        onBlur={handleTextAreaBlur}
         rows={1}
         style={{
           display: 'block',
@@ -377,7 +438,13 @@ function TextBox({
           color: CANVAS_TYPING_INK,
           padding: '2px 4px',
           boxSizing: 'border-box',
-          cursor: isEditing ? 'text' : isTextMode ? 'text' : 'default',
+          cursor: isEditing
+            ? 'text'
+            : isSelectMode
+              ? 'text'
+              : isTextMode
+                ? 'text'
+                : 'default',
           caretColor: CANVAS_TYPING_INK,
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
@@ -392,13 +459,13 @@ function TextBox({
           onPointerDown={handleResizePointerDown}
           style={{
             position: 'absolute',
-            right: -RESIZE_HANDLE_W / 2,
+            right: -resizeW / 2,
             top: '50%',
             transform: 'translateY(-50%)',
-            width: RESIZE_HANDLE_W,
-            height: 24,
+            width: resizeW,
+            height: resizeH,
             background: 'rgb(99 102 241)',
-            borderRadius: 4,
+            borderRadius: 4 * s,
             cursor: 'ew-resize',
             pointerEvents: 'auto',
           }}

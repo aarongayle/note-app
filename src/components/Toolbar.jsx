@@ -312,7 +312,7 @@ export default function Toolbar({ noteId: noteIdProp } = {}) {
             <button
               type="button"
               onClick={() => setMode('select')}
-              title="Select — read and select text"
+              title="Select — read PDF/EPUB text; move, rotate, and scale images and text boxes; click a text box to type without changing tools"
               className={`p-2 rounded-lg transition-colors ${
                 isSelect
                   ? 'bg-accent/20 text-accent'

@@ -16,12 +16,32 @@ import {
   strokeIntersectsLasso,
   unionBBoxOfStrokes,
   hitTransformHandle,
+  transformHandleHitShapes,
   LASSO_ROTATE_OFFSET,
   LASSO_HANDLE_RADIUS,
 } from '../lib/lassoGeometry.js'
 import {
   axisAlignedBBoxForRotatedRect,
-  pointInRotatedRect,
+  pointInImageEmbed,
+  embedPolygonPointsAttr,
+  embedCenter,
+  embedLocalHandleBBox,
+  hitImageEmbedTransformHandle,
+  embedCropFixedAnchorWorld,
+  embedCropInwardWorld,
+  embedPositionFromCropAnchor,
+  embedCropEdgeHitShapes,
+  embedScaleFixedCornerWorld,
+  embedRectFromCornerDrag,
+  embedSkewHandlePoints,
+  embedSkewHandleTrianglePoints,
+  embedSkewHandleVisualRadius,
+  embedImageDeleteHandleLocal,
+  embedSkewPatchFromDrag,
+  normalizeEmbedQuad,
+  worldDeltaToEmbedLocal,
+  embedLocalCorners,
+  embedEdgeMidpoints,
 } from '../lib/imageEmbedGeometry.js'
 import {
   translateStroke,
@@ -88,6 +108,8 @@ function pointInPolygon(px, py, polygon) {
 /** @param {number} lineSpacingPx Scaled line / grid spacing */
 function templateStylesForSpacing(lineSpacingPx) {
   const t = lineSpacingPx - 1
+  /** Dot radius scales with cell size (1px when spacing was the original 32px). */
+  const dotR = lineSpacingPx / 32
   return {
     blank: {},
     lined: {
@@ -102,7 +124,7 @@ function templateStylesForSpacing(lineSpacingPx) {
       backgroundSize: `${lineSpacingPx}px ${lineSpacingPx}px`,
     },
     dotted: {
-      backgroundImage: `radial-gradient(circle, #c0c0d8 1px, transparent 1px)`,
+      backgroundImage: `radial-gradient(circle, #c0c0d8 ${dotR}px, transparent ${dotR}px)`,
       backgroundSize: `${lineSpacingPx}px ${lineSpacingPx}px`,
     },
   }
@@ -126,10 +148,12 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   const lassoDraftRef = useRef(null)
   /** @type {React.MutableRefObject<null | { kind: 'move' | 'rotate' | 'scale'; startX: number; startY: number; baseStrokes: unknown[]; indices: number[]; centerX: number; centerY: number; startDist: number; angle0: number }>} */
   const transformGestureRef = useRef(null)
-  /** @type {React.MutableRefObject<null | { kind: 'move' | 'rotate' | 'scale'; startX: number; startY: number; baseEmbed: object; embedId: string; centerX: number; centerY: number; startDist: number; angle0: number; baseRotation: number }>} */
+  /** @type {React.MutableRefObject<null | { kind: 'move' | 'rotate' | 'cropN' | 'cropS' | 'cropE' | 'cropW' | 'scaleNW' | 'scaleNE' | 'scaleSE' | 'scaleSW' | 'skewNwX' | 'skewNwY' | 'skewNeX' | 'skewNeY' | 'skewSeX' | 'skewSeY' | 'skewSwX' | 'skewSwY'; startX: number; startY: number; baseEmbed: object; embedId: string; centerX?: number; centerY?: number; angle0?: number; baseRotation: number; fixedWorld?: [number, number]; inwardWorld?: [number, number]; startW?: number; startH?: number }>} */
   const imageTransformRef = useRef(null)
   /** @type {React.MutableRefObject<null | { embedId: string; startX: number; startY: number }>} */
   const imageTapRef = useRef(null)
+  /** Max drag distance during select-mode image tap (note space) — distinguishes tap from scroll. */
+  const imageSelectTapMaxDistRef = useRef(0)
 
   const [selectedStrokeIndices, setSelectedStrokeIndices] = useState([])
   const [selectedImageEmbedId, setSelectedImageEmbedId] = useState(null)
@@ -155,8 +179,6 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   })
   const isKeyboard = inputMode === 'keyboard'
   const isSelect = inputMode === 'select'
-  /** True when the SVG drawing layer should be passive (no ink, no lasso) */
-  const isPassive = isKeyboard || isSelect
 
   const activePen = useNotesStore((s) => s.activePen)
   const activeColor = useNotesStore((s) => s.activeColor)
@@ -191,6 +213,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   const setNoteImageEmbedsLive = useNotesStore(
     (s) => s.setNoteImageEmbedsLive
   )
+  const removeImageEmbed = useNotesStore((s) => s.removeImageEmbed)
   const cancelStrokesEditGesture = useNotesStore(
     (s) => s.cancelStrokesEditGesture
   )
@@ -356,7 +379,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   }, [note?.id, note?.strokes.length])
 
   useEffect(() => {
-    if (PEN_TYPES[activePen]?.isLasso) return
+    if (PEN_TYPES[activePen]?.isLasso || isSelect) return
     const id = note?.id
     if (id) {
       cancelStrokesEditGesture(id)
@@ -370,7 +393,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     transformGestureRef.current = null
     imageTransformRef.current = null
     imageTapRef.current = null
-  }, [activePen, note?.id, cancelStrokesEditGesture, cancelImageEmbedEditGesture])
+  }, [activePen, isSelect, note?.id, cancelStrokesEditGesture, cancelImageEmbedEditGesture])
 
   useLayoutEffect(() => {
     const el = containerRef.current
@@ -390,7 +413,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     scrollPositionCache.set(scrollSyncNoteId, container.scrollTop)
     const curZoom = useNotesStore.getState().items[scrollSyncNoteId]?.zoom ?? 1
     debouncedScrollPersist(scrollSyncNoteId, curZoom)
-    if (isPassive) return
+    if (isKeyboard) return
     const n = useNotesStore.getState().items[scrollSyncNoteId]
     if (!n || n.type !== 'note') return
     const zoom = n.zoom ?? 1
@@ -429,7 +452,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     if (n.scrollHeight > targetH + 200) {
       trimScrollHeight(scrollSyncNoteId, targetH)
     }
-  }, [scrollSyncNoteId, extendScrollHeight, trimScrollHeight, isPassive])
+  }, [scrollSyncNoteId, extendScrollHeight, trimScrollHeight, isKeyboard])
 
   useEffect(() => {
     const container = containerRef.current
@@ -470,23 +493,12 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     syncScrollExtent()
   }, [note?.id, noteZoom, syncScrollExtent])
 
-  // Clear textbox editing state when switching away from text mode.
+  // Drop text focus when switching to stylus (can't interact with boxes).
   useEffect(() => {
-    if (!isKeyboard) {
+    if (inputMode === 'stylus') {
       setEditingTextBoxId(null)
     }
-  }, [isKeyboard])
-
-  // Clear lasso/selection state when switching to select mode (no lasso available).
-  useEffect(() => {
-    if (isSelect) {
-      setSelectedStrokeIndices([])
-      setSelectedImageEmbedId(null)
-      setSelectedTextBoxIds([])
-      setLassoDraftPoints(null)
-      lassoDraftRef.current = null
-    }
-  }, [isSelect])
+  }, [inputMode])
 
   const getPointerPos = useCallback(
     (e) => {
@@ -530,37 +542,172 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
   )
 
   const showLassoChrome =
-    !isPassive && PEN_TYPES[activePen]?.isLasso && selectionBBox
+    !isKeyboard &&
+    !isSelect &&
+    PEN_TYPES[activePen]?.isLasso &&
+    selectionBBox
 
   const selectedImageEmbed = useMemo(() => {
     if (!note || !selectedImageEmbedId) return null
     return (note.imageEmbeds ?? []).find((e) => e.id === selectedImageEmbedId) ?? null
   }, [note, selectedImageEmbedId])
 
-  const selectedImageBBox = useMemo(() => {
-    if (!selectedImageEmbed) return null
-    return axisAlignedBBoxForRotatedRect(
-      selectedImageEmbed.x,
-      selectedImageEmbed.y,
-      selectedImageEmbed.width,
-      selectedImageEmbed.height,
-      selectedImageEmbed.rotation ?? 0
-    )
-  }, [selectedImageEmbed])
+  const showImageTransformChrome =
+    selectedImageEmbed &&
+    selectedImageEmbedId &&
+    (isSelect || (PEN_TYPES[activePen]?.isLasso && !isKeyboard))
 
-  const showImageLassoChrome =
-    !isPassive &&
-    PEN_TYPES[activePen]?.isLasso &&
-    selectedImageBBox &&
-    selectedImageEmbedId
+  /** Lasso / image handles in note space — scaled so on-screen size stays ~constant when zooming. */
+  const transformHandleUi = useMemo(() => {
+    const z = Math.max(noteZoom, 0.05)
+    const inv = 1 / z
+    return {
+      hr: LASSO_HANDLE_RADIUS * inv,
+      ro: LASSO_ROTATE_OFFSET * inv,
+      sw: inv,
+      swBold: 1.5 * inv,
+      rx: 2 * inv,
+      dash: `${5 * inv} ${4 * inv}`,
+      dashSmall: `${3 * inv} ${3 * inv}`,
+    }
+  }, [noteZoom])
 
   const handlePointerDown = useCallback(
     (e) => {
-      if (!note || isPassive) return
+      if (!note || isKeyboard) return
       bumpToolbarToThisPane()
       if (e.button !== 0) return
       // Pen/mouse always; touch only on phone-class viewports (see noteInputDefaults).
       if (e.pointerType === 'touch' && !phoneClassViewport) return
+
+      if (isSelect) {
+        e.preventDefault()
+        e.currentTarget.setPointerCapture(e.pointerId)
+        isDrawingRef.current = true
+        drawingPointerIdRef.current = e.pointerId
+
+        const point = getPointerPos(e)
+        const px = point[0]
+        const py = point[1]
+        const row = useNotesStore.getState().items[note.id]
+        const embeds = row?.imageEmbeds ?? []
+
+        if (selectedImageEmbedId) {
+          const emb = embeds.find((em) => em.id === selectedImageEmbedId)
+          if (emb) {
+            const ihit = hitImageEmbedTransformHandle(px, py, emb, noteZoom)
+            if (ihit) {
+              imageTapRef.current = null
+              if (ihit === 'deleteImage') {
+                setSelectedTextBoxIds([])
+                setSelectedStrokeIndices([])
+                removeImageEmbed(note.id, emb.id)
+                setSelectedImageEmbedId(null)
+                isDrawingRef.current = false
+                drawingPointerIdRef.current = null
+                try {
+                  e.currentTarget.releasePointerCapture(e.pointerId)
+                } catch {
+                  /* no-op */
+                }
+                return
+              }
+              setSelectedTextBoxIds([])
+              setSelectedStrokeIndices([])
+              beginImageEmbedEditGesture(note.id)
+              const rot = emb.rotation ?? 0
+              if (
+                ihit === 'cropN' ||
+                ihit === 'cropS' ||
+                ihit === 'cropE' ||
+                ihit === 'cropW'
+              ) {
+                imageTransformRef.current = {
+                  kind: ihit,
+                  startX: px,
+                  startY: py,
+                  baseEmbed: { ...emb },
+                  embedId: emb.id,
+                  baseRotation: rot,
+                  fixedWorld: embedCropFixedAnchorWorld(emb, ihit),
+                  inwardWorld: embedCropInwardWorld(ihit, rot),
+                  startW: emb.width,
+                  startH: emb.height,
+                }
+              } else if (
+                ihit === 'scaleNW' ||
+                ihit === 'scaleNE' ||
+                ihit === 'scaleSE' ||
+                ihit === 'scaleSW'
+              ) {
+                imageTransformRef.current = {
+                  kind: ihit,
+                  startX: px,
+                  startY: py,
+                  baseEmbed: { ...emb },
+                  embedId: emb.id,
+                  baseRotation: rot,
+                  fixedWorld: embedScaleFixedCornerWorld(emb, ihit),
+                }
+              } else if (
+                ihit === 'skewNwX' ||
+                ihit === 'skewNwY' ||
+                ihit === 'skewNeX' ||
+                ihit === 'skewNeY' ||
+                ihit === 'skewSeX' ||
+                ihit === 'skewSeY' ||
+                ihit === 'skewSwX' ||
+                ihit === 'skewSwY'
+              ) {
+                imageTransformRef.current = {
+                  kind: ihit,
+                  startX: px,
+                  startY: py,
+                  baseEmbed: { ...emb },
+                  embedId: emb.id,
+                  baseRotation: rot,
+                }
+              } else {
+                const cx = emb.x + emb.width / 2
+                const cy = emb.y + emb.height / 2
+                imageTransformRef.current = {
+                  kind: ihit,
+                  startX: px,
+                  startY: py,
+                  baseEmbed: { ...emb },
+                  embedId: emb.id,
+                  centerX: cx,
+                  centerY: cy,
+                  angle0: Math.atan2(py - cy, px - cx),
+                  baseRotation: rot,
+                }
+              }
+              return
+            }
+          }
+        }
+
+        for (let i = embeds.length - 1; i >= 0; i--) {
+          const emb = embeds[i]
+          if (pointInImageEmbed(px, py, emb)) {
+            imageTapRef.current = {
+              embedId: emb.id,
+              startX: px,
+              startY: py,
+            }
+            imageSelectTapMaxDistRef.current = 0
+            setSelectedTextBoxIds([])
+            setSelectedStrokeIndices([])
+            return
+          }
+        }
+
+        imageTapRef.current = null
+        setSelectedImageEmbedId(null)
+        setSelectedStrokeIndices([])
+        setSelectedTextBoxIds([])
+        return
+      }
 
       e.preventDefault()
       e.currentTarget.setPointerCapture(e.pointerId)
@@ -590,7 +737,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
             strokesNow,
             selectedStrokeIndices
           )
-          const hit = bbox ? hitTransformHandle(px, py, bbox) : null
+          const hit = bbox ? hitTransformHandle(px, py, bbox, noteZoom) : null
           if (hit) {
             const cx = (bbox.minX + bbox.maxX) / 2
             const cy = (bbox.minY + bbox.maxY) / 2
@@ -613,29 +760,87 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
         if (selectedImageEmbedId) {
           const emb = embeds.find((e) => e.id === selectedImageEmbedId)
           if (emb) {
-            const ibox = axisAlignedBBoxForRotatedRect(
-              emb.x,
-              emb.y,
-              emb.width,
-              emb.height,
-              emb.rotation ?? 0
-            )
-            const ihit = hitTransformHandle(px, py, ibox)
+            const ihit = hitImageEmbedTransformHandle(px, py, emb, noteZoom)
             if (ihit) {
+              if (ihit === 'deleteImage') {
+                removeImageEmbed(note.id, emb.id)
+                setSelectedImageEmbedId(null)
+                isDrawingRef.current = false
+                drawingPointerIdRef.current = null
+                try {
+                  e.currentTarget.releasePointerCapture(e.pointerId)
+                } catch {
+                  /* no-op */
+                }
+                return
+              }
               beginImageEmbedEditGesture(note.id)
-              const cx = emb.x + emb.width / 2
-              const cy = emb.y + emb.height / 2
-              imageTransformRef.current = {
-                kind: ihit,
-                startX: px,
-                startY: py,
-                baseEmbed: { ...emb },
-                embedId: emb.id,
-                centerX: cx,
-                centerY: cy,
-                startDist: Math.max(Math.hypot(px - cx, py - cy), 1e-6),
-                angle0: Math.atan2(py - cy, px - cx),
-                baseRotation: emb.rotation ?? 0,
+              const rot = emb.rotation ?? 0
+              if (
+                ihit === 'cropN' ||
+                ihit === 'cropS' ||
+                ihit === 'cropE' ||
+                ihit === 'cropW'
+              ) {
+                imageTransformRef.current = {
+                  kind: ihit,
+                  startX: px,
+                  startY: py,
+                  baseEmbed: { ...emb },
+                  embedId: emb.id,
+                  baseRotation: rot,
+                  fixedWorld: embedCropFixedAnchorWorld(emb, ihit),
+                  inwardWorld: embedCropInwardWorld(ihit, rot),
+                  startW: emb.width,
+                  startH: emb.height,
+                }
+              } else if (
+                ihit === 'scaleNW' ||
+                ihit === 'scaleNE' ||
+                ihit === 'scaleSE' ||
+                ihit === 'scaleSW'
+              ) {
+                imageTransformRef.current = {
+                  kind: ihit,
+                  startX: px,
+                  startY: py,
+                  baseEmbed: { ...emb },
+                  embedId: emb.id,
+                  baseRotation: rot,
+                  fixedWorld: embedScaleFixedCornerWorld(emb, ihit),
+                }
+              } else if (
+                ihit === 'skewNwX' ||
+                ihit === 'skewNwY' ||
+                ihit === 'skewNeX' ||
+                ihit === 'skewNeY' ||
+                ihit === 'skewSeX' ||
+                ihit === 'skewSeY' ||
+                ihit === 'skewSwX' ||
+                ihit === 'skewSwY'
+              ) {
+                imageTransformRef.current = {
+                  kind: ihit,
+                  startX: px,
+                  startY: py,
+                  baseEmbed: { ...emb },
+                  embedId: emb.id,
+                  baseRotation: rot,
+                }
+              } else {
+                const cx = emb.x + emb.width / 2
+                const cy = emb.y + emb.height / 2
+                imageTransformRef.current = {
+                  kind: ihit,
+                  startX: px,
+                  startY: py,
+                  baseEmbed: { ...emb },
+                  embedId: emb.id,
+                  centerX: cx,
+                  centerY: cy,
+                  angle0: Math.atan2(py - cy, px - cx),
+                  baseRotation: rot,
+                }
               }
               return
             }
@@ -644,17 +849,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
 
         for (let i = embeds.length - 1; i >= 0; i--) {
           const emb = embeds[i]
-          if (
-            pointInRotatedRect(
-              px,
-              py,
-              emb.x,
-              emb.y,
-              emb.width,
-              emb.height,
-              emb.rotation ?? 0
-            )
-          ) {
+          if (pointInImageEmbed(px, py, emb)) {
             imageTapRef.current = {
               embedId: emb.id,
               startX: px,
@@ -707,7 +902,8 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     },
     [
       note,
-      isPassive,
+      isKeyboard,
+      isSelect,
       activePen,
       activeColor,
       penSize,
@@ -719,15 +915,30 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
       beginImageEmbedEditGesture,
       selectedStrokeIndices,
       selectedImageEmbedId,
+      noteZoom,
       phoneClassViewport,
       bumpToolbarToThisPane,
+      removeImageEmbed,
+      setSelectedImageEmbedId,
     ]
   )
 
   const handlePointerMove = useCallback(
     (e) => {
-      if (!isDrawingRef.current || !note || isPassive) return
+      if (!note || isKeyboard) return
       if (e.pointerId !== drawingPointerIdRef.current) return
+
+      if (isSelect && imageTapRef.current) {
+        const tap = imageTapRef.current
+        const point = getPointerPos(e)
+        const d = Math.hypot(point[0] - tap.startX, point[1] - tap.startY)
+        imageSelectTapMaxDistRef.current = Math.max(
+          imageSelectTapMaxDistRef.current,
+          d
+        )
+      }
+
+      if (!isDrawingRef.current) return
 
       e.preventDefault()
       const point = getPointerPos(e)
@@ -744,6 +955,66 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
         const base = g.baseEmbed
         const cx = g.centerX
         const cy = g.centerY
+        if (
+          g.kind === 'cropN' ||
+          g.kind === 'cropS' ||
+          g.kind === 'cropE' ||
+          g.kind === 'cropW'
+        ) {
+          const fw = g.fixedWorld
+          const iw = g.inwardWorld
+          const sw0 = g.startW
+          const sh0 = g.startH
+          if (!fw || !iw || sw0 == null || sh0 == null) return
+          const du =
+            (x - g.startX) * iw[0] + (y - g.startY) * iw[1]
+          const rot = g.baseRotation
+          const cropLeft0 = Math.max(0, Number(base.cropLeft ?? 0))
+          const cropTop0 = Math.max(0, Number(base.cropTop ?? 0))
+          const cropRight0 = Math.max(0, Number(base.cropRight ?? 0))
+          const cropBottom0 = Math.max(0, Number(base.cropBottom ?? 0))
+          let wNew = sw0
+          let hNew = sh0
+          let cropLeft = cropLeft0
+          let cropTop = cropTop0
+          let cropRight = cropRight0
+          let cropBottom = cropBottom0
+          if (g.kind === 'cropN' || g.kind === 'cropS') {
+            const maxIn = sh0 - 8
+            const minOut = g.kind === 'cropN' ? -cropTop0 : -cropBottom0
+            const appliedDu = Math.min(maxIn, Math.max(minOut, du))
+            hNew = sh0 - appliedDu
+            if (g.kind === 'cropN') cropTop = cropTop0 + appliedDu
+            if (g.kind === 'cropS') cropBottom = cropBottom0 + appliedDu
+          } else {
+            const maxIn = sw0 - 8
+            const minOut = g.kind === 'cropW' ? -cropLeft0 : -cropRight0
+            const appliedDu = Math.min(maxIn, Math.max(minOut, du))
+            wNew = sw0 - appliedDu
+            if (g.kind === 'cropW') cropLeft = cropLeft0 + appliedDu
+            if (g.kind === 'cropE') cropRight = cropRight0 + appliedDu
+          }
+          const pos = embedPositionFromCropAnchor(
+            fw[0],
+            fw[1],
+            g.kind,
+            wNew,
+            hNew,
+            rot
+          )
+          list[idx] = {
+            ...base,
+            ...pos,
+            width: wNew,
+            height: hNew,
+            cropLeft,
+            cropTop,
+            cropRight,
+            cropBottom,
+          }
+          setNoteImageEmbedsLive(note.id, list)
+          return
+        }
         if (g.kind === 'move') {
           const dx = x - g.startX
           const dy = y - g.startY
@@ -762,19 +1033,66 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
           setNoteImageEmbedsLive(note.id, list)
           return
         }
-        if (g.kind === 'scale') {
-          const d = Math.hypot(x - cx, y - cy)
-          const sc = d / g.startDist
-          const scale = Math.max(0.05, Math.min(sc, 40))
-          const nw = Math.max(8, base.width * scale)
-          const nh = Math.max(8, base.height * scale)
+        if (
+          g.kind === 'scaleNW' ||
+          g.kind === 'scaleNE' ||
+          g.kind === 'scaleSE' ||
+          g.kind === 'scaleSW'
+        ) {
+          const fw = g.fixedWorld
+          if (!fw) return
+          const rect = embedRectFromCornerDrag(
+            fw[0],
+            fw[1],
+            x,
+            y,
+            g.kind,
+            g.baseRotation,
+            8
+          )
+          const sx = rect.width / Math.max(base.width, 1e-6)
+          const sy = rect.height / Math.max(base.height, 1e-6)
           list[idx] = {
             ...base,
-            x: cx - nw / 2,
-            y: cy - nh / 2,
-            width: nw,
-            height: nh,
+            ...rect,
+            cropLeft: Math.max(0, Number(base.cropLeft ?? 0) * sx),
+            cropTop: Math.max(0, Number(base.cropTop ?? 0) * sy),
+            cropRight: Math.max(0, Number(base.cropRight ?? 0) * sx),
+            cropBottom: Math.max(0, Number(base.cropBottom ?? 0) * sy),
+            skewNwX: Number(base.skewNwX ?? 0) * sx,
+            skewNwY: Number(base.skewNwY ?? 0) * sy,
+            skewNeX: Number(base.skewNeX ?? 0) * sx,
+            skewNeY: Number(base.skewNeY ?? 0) * sy,
+            skewSeX: Number(base.skewSeX ?? 0) * sx,
+            skewSeY: Number(base.skewSeY ?? 0) * sy,
+            skewSwX: Number(base.skewSwX ?? 0) * sx,
+            skewSwY: Number(base.skewSwY ?? 0) * sy,
           }
+          setNoteImageEmbedsLive(note.id, list)
+          return
+        }
+        if (
+          g.kind === 'skewNwX' ||
+          g.kind === 'skewNwY' ||
+          g.kind === 'skewNeX' ||
+          g.kind === 'skewNeY' ||
+          g.kind === 'skewSeX' ||
+          g.kind === 'skewSeY' ||
+          g.kind === 'skewSwX' ||
+          g.kind === 'skewSwY'
+        ) {
+          const [dlx, dly] = worldDeltaToEmbedLocal(
+            x - g.startX,
+            y - g.startY,
+            g.baseRotation
+          )
+          const dLocal =
+            g.kind.endsWith('X') ? dlx : dly
+          const patch = embedSkewPatchFromDrag(base, g.kind, dLocal)
+          list[idx] = normalizeEmbedQuad({
+            ...base,
+            ...patch,
+          })
           setNoteImageEmbedsLive(note.id, list)
           return
         }
@@ -848,7 +1166,8 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     },
     [
       note,
-      isPassive,
+      isKeyboard,
+      isSelect,
       activePen,
       getPointerPos,
       eraseStrokesAt,
@@ -870,6 +1189,9 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     drawingPointerIdRef.current = null
 
     if (imageTransformRef.current && note) {
+      const embeds = note.imageEmbeds ?? []
+      const normList = embeds.map((e) => normalizeEmbedQuad(e))
+      setNoteImageEmbedsLive(note.id, normList)
       imageTransformRef.current = null
       commitImageEmbedEditGesture(note.id)
       return
@@ -878,6 +1200,19 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     if (transformGestureRef.current && note) {
       transformGestureRef.current = null
       commitStrokesEditGesture(note.id)
+      return
+    }
+
+    if (note && isSelect && imageTapRef.current) {
+      const tap = imageTapRef.current
+      const maxD = imageSelectTapMaxDistRef.current
+      imageTapRef.current = null
+      imageSelectTapMaxDistRef.current = 0
+      if (maxD < 12) {
+        setSelectedStrokeIndices([])
+        setSelectedImageEmbedId(tap.embedId)
+        setSelectedTextBoxIds([])
+      }
       return
     }
 
@@ -941,6 +1276,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     currentStrokeRef.current = null
   }, [
     note,
+    isSelect,
     activePen,
     addStroke,
     commitStrokeEraserGesture,
@@ -977,11 +1313,60 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
     [editingTextBoxId, cleanUpEmptyEditingTextBox]
   )
 
+  /** Select tool: click in text body focuses for typing without changing toolbar mode. */
+  const handleEditFromSelect = useCallback(
+    (textBoxId) => {
+      if (!note) return
+      bumpToolbarToThisPane()
+      handleStartEditTextBox(textBoxId)
+    },
+    [note, bumpToolbarToThisPane, handleStartEditTextBox]
+  )
+
+  const handleTextBoxEditBlur = useCallback((id) => {
+    setEditingTextBoxId((prev) => (prev === id ? null : prev))
+  }, [])
+
   /**
    * Handles a tap/click on empty canvas space while in text (keyboard) mode:
    * creates a new textbox whose left edge is at the click position and whose
    * right edge reaches the current viewport right boundary.
    */
+  const handleSelectPanePointerDown = useCallback(
+    (e) => {
+      if (!isSelect || !note) return
+      if (e.button !== 0) return
+      if (e.target !== e.currentTarget) return
+      bumpToolbarToThisPane()
+      cleanUpEmptyEditingTextBox(editingTextBoxId)
+      setEditingTextBoxId(null)
+      setSelectedImageEmbedId(null)
+      setSelectedTextBoxIds([])
+      setSelectedStrokeIndices([])
+    },
+    [
+      isSelect,
+      note,
+      bumpToolbarToThisPane,
+      editingTextBoxId,
+      cleanUpEmptyEditingTextBox,
+    ]
+  )
+
+  const handleSelectTextBox = useCallback(
+    (id) => {
+      bumpToolbarToThisPane()
+      if (editingTextBoxId && editingTextBoxId !== id) {
+        cleanUpEmptyEditingTextBox(editingTextBoxId)
+      }
+      setEditingTextBoxId(null)
+      setSelectedTextBoxIds([id])
+      setSelectedImageEmbedId(null)
+      setSelectedStrokeIndices([])
+    },
+    [bumpToolbarToThisPane, editingTextBoxId, cleanUpEmptyEditingTextBox]
+  )
+
   const handlePaperPointerDown = useCallback(
     (e) => {
       if (!isKeyboard || !note) return
@@ -1206,7 +1591,10 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
           className="relative w-full min-w-0"
           style={scaledInnerStyle}
           data-notezoom={noteZoom}
-          onPointerDown={isKeyboard ? handlePaperPointerDown : undefined}
+          onPointerDown={(e) => {
+            if (isKeyboard) handlePaperPointerDown(e)
+            else if (isSelect) handleSelectPanePointerDown(e)
+          }}
         >
           <PdfNoteBackground
             pdfUrl={pdfUrl ?? null}
@@ -1237,6 +1625,11 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
             editingId={editingTextBoxId}
             selectedIds={selectedTextBoxIds}
             isTextMode={isKeyboard}
+            isSelectMode={isSelect}
+            noteZoom={noteZoom}
+            onSelectTextBox={handleSelectTextBox}
+            onEditFromSelect={handleEditFromSelect}
+            onTextBoxEditBlur={handleTextBoxEditBlur}
             onStartEdit={handleStartEditTextBox}
             onCommitEdit={handleTextBoxEdit}
             onDelete={handleDeleteTextBox}
@@ -1249,14 +1642,14 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
             ref={svgRef}
             width="100%"
             height="100%"
-            className={`absolute top-0 left-0 w-full ${
-              isPassive
-                ? `z-[5] pointer-events-none${isSelect ? ' cursor-default' : ''}`
-                : 'cursor-crosshair z-[5]'
+            className={`absolute top-0 left-0 w-full z-[5] ${
+              isKeyboard || isSelect
+                ? `pointer-events-none${isSelect ? ' cursor-default' : ''}`
+                : 'cursor-crosshair'
             }`}
             style={{
               minHeight: note.scrollHeight,
-              touchAction: isPassive ? 'auto' : 'none',
+              touchAction: isKeyboard || isSelect ? 'auto' : 'none',
             }}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
@@ -1269,6 +1662,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
                 key={i}
                 d={renderStroke(stroke)}
                 fill={stroke.color}
+                style={{ pointerEvents: isSelect ? 'none' : undefined }}
                 opacity={
                   selectedStrokeSet.has(i)
                     ? Math.min(1, (stroke.opacity ?? 1) * 0.92)
@@ -1276,6 +1670,16 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
                 }
               />
             ))}
+            {isSelect &&
+              (note.imageEmbeds ?? []).map((emb) => (
+                <polygon
+                  key={`select-hit-${emb.id}`}
+                  points={embedPolygonPointsAttr(emb)}
+                  fill="transparent"
+                  stroke="none"
+                  style={{ pointerEvents: 'auto', cursor: 'pointer' }}
+                />
+              ))}
             {lassoDraftPoints && lassoDraftPoints.length > 0 && (
               <g pointerEvents="none">
                 <polyline
@@ -1308,11 +1712,11 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
             {showLassoChrome && selectionBBox && (
               <g pointerEvents="none">
                 {(() => {
+                  const { hr, ro, sw, swBold, rx, dash, dashSmall } =
+                    transformHandleUi
                   const { minX: mx, minY: my, maxX: Mx, maxY: My } =
                     selectionBBox
                   const cx = (mx + Mx) / 2
-                  const ro = LASSO_ROTATE_OFFSET
-                  const hr = LASSO_HANDLE_RADIUS
                   const accent = 'rgb(99 102 241)'
                   const hy = my - ro
                   return (
@@ -1324,9 +1728,9 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
                         height={My - my}
                         fill="none"
                         stroke={accent}
-                        strokeWidth={1}
-                        strokeDasharray="5 4"
-                        rx={2}
+                        strokeWidth={sw}
+                        strokeDasharray={dash}
+                        rx={rx}
                       />
                       <line
                         x1={cx}
@@ -1334,16 +1738,16 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
                         x2={cx}
                         y2={hy + hr}
                         stroke={accent}
-                        strokeWidth={1}
-                        strokeDasharray="3 3"
+                        strokeWidth={sw}
+                        strokeDasharray={dashSmall}
                       />
                       <circle
                         cx={cx}
                         cy={hy}
-                        r={hr + 2}
+                        r={hr + 2 * sw}
                         fill="white"
                         stroke={accent}
-                        strokeWidth={1.5}
+                        strokeWidth={swBold}
                       />
                       {[
                         [mx, my],
@@ -1358,7 +1762,7 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
                           r={hr}
                           fill="white"
                           stroke={accent}
-                          strokeWidth={1.5}
+                          strokeWidth={swBold}
                         />
                       ))}
                     </>
@@ -1366,62 +1770,229 @@ export default function Canvas({ noteId: noteIdProp } = {}) {
                 })()}
               </g>
             )}
-            {showImageLassoChrome && selectedImageBBox && (
-              <g pointerEvents="none">
-                {(() => {
-                  const { minX: mx, minY: my, maxX: Mx, maxY: My } =
-                    selectedImageBBox
-                  const cx = (mx + Mx) / 2
-                  const ro = LASSO_ROTATE_OFFSET
-                  const hr = LASSO_HANDLE_RADIUS
-                  const accent = 'rgb(99 102 241)'
-                  const hy = my - ro
-                  return (
-                    <>
-                      <rect
-                        x={mx}
-                        y={my}
-                        width={Mx - mx}
-                        height={My - my}
+            {showImageTransformChrome &&
+              selectedImageEmbed &&
+              (() => {
+                const emb = selectedImageEmbed
+                const { cx: icx, cy: icy } = embedCenter(emb)
+                const rot = emb.rotation ?? 0
+                const gTransform = `translate(${icx}, ${icy}) rotate(${rot})`
+                const corners = embedLocalCorners(emb)
+                const [nw, ne, se, sw] = corners
+                const mids = embedEdgeMidpoints(corners)
+                const { hr, ro, sw: swU, swBold, dash, dashSmall } =
+                  transformHandleUi
+                const topMid = mids.n
+                const hy = topMid[1] - ro
+                const accent = 'rgb(99 102 241)'
+                const lb = embedLocalHandleBBox(emb)
+                const hit = transformHandleHitShapes(lb, noteZoom)
+                const cropHit = embedCropEdgeHitShapes(corners, noteZoom)
+                const skewHit = embedSkewHandlePoints(corners)
+                const del = embedImageDeleteHandleLocal(corners, noteZoom)
+                const cropVw = Math.max(cropHit.cropW * 0.7, 7 * swU)
+                const cropVh = Math.max(cropHit.cropH * 0.7, 4 * swU)
+                const cropFill = 'rgb(199 202 252)'
+                const delR = del.r * 0.92
+                const delX = delR * 0.38
+                return (
+                  <>
+                    <g pointerEvents="none" transform={gTransform}>
+                      <polygon
+                        points={`${nw[0]},${nw[1]} ${ne[0]},${ne[1]} ${se[0]},${se[1]} ${sw[0]},${sw[1]}`}
                         fill="none"
                         stroke={accent}
-                        strokeWidth={1}
-                        strokeDasharray="5 4"
-                        rx={2}
+                        strokeWidth={swU}
+                        strokeDasharray={dash}
+                        strokeLinejoin="round"
                       />
                       <line
-                        x1={cx}
-                        y1={my}
-                        x2={cx}
+                        x1={topMid[0]}
+                        y1={topMid[1]}
+                        x2={topMid[0]}
                         y2={hy + hr}
                         stroke={accent}
-                        strokeWidth={1}
-                        strokeDasharray="3 3"
+                        strokeWidth={swU}
+                        strokeDasharray={dashSmall}
                       />
                       <circle
-                        cx={cx}
+                        cx={topMid[0]}
                         cy={hy}
-                        r={hr + 2}
+                        r={hr + 2 * swU}
                         fill="white"
                         stroke={accent}
-                        strokeWidth={1.5}
+                        strokeWidth={swBold}
                       />
-                      {[
-                        [mx, my],
-                        [Mx, my],
-                        [Mx, My],
-                        [mx, My],
-                      ].map(([x, y], hi) => (
+                      {corners.map(([cx, cy], hi) => (
                         <circle
                           key={hi}
-                          cx={x}
-                          cy={y}
+                          cx={cx}
+                          cy={cy}
                           r={hr}
                           fill="white"
                           stroke={accent}
-                          strokeWidth={1.5}
+                          strokeWidth={swBold}
                         />
                       ))}
+                      {skewHit.map(({ kind, x: sx, y: sy }) => {
+                        const tri = embedSkewHandleTrianglePoints(
+                          corners,
+                          sx,
+                          sy,
+                          noteZoom
+                        )
+                        const pts = tri.map(([x, y]) => `${x},${y}`).join(' ')
+                        return (
+                          <polygon
+                            key={`iskv-${kind}`}
+                            points={pts}
+                            fill="white"
+                            stroke={accent}
+                            strokeWidth={swBold}
+                            strokeLinejoin="round"
+                          />
+                        )
+                      })}
+                      {cropHit.items.map(({ kind, cx: ccx, cy: ccy }) => (
+                        <rect
+                          key={`icv-${kind}`}
+                          x={ccx - cropVw / 2}
+                          y={ccy - cropVh / 2}
+                          width={cropVw}
+                          height={cropVh}
+                          rx={2 * swU}
+                          fill={cropFill}
+                          stroke={accent}
+                          strokeWidth={swBold}
+                        />
+                      ))}
+                      <g transform={`translate(${del.x},${del.y})`}>
+                        <circle
+                          r={delR}
+                          fill="white"
+                          stroke={accent}
+                          strokeWidth={swBold}
+                        />
+                        <path
+                          d={`M ${-delX},${-delX} L ${delX},${delX} M ${delX},${-delX} L ${-delX},${delX}`}
+                          fill="none"
+                          stroke={accent}
+                          strokeWidth={Math.max(1.25 * swU, delR * 0.16)}
+                          strokeLinecap="round"
+                        />
+                      </g>
+                    </g>
+                    <g pointerEvents="auto" transform={gTransform}>
+                      <polygon
+                        points={`${nw[0]},${nw[1]} ${ne[0]},${ne[1]} ${se[0]},${se[1]} ${sw[0]},${sw[1]}`}
+                        fill="transparent"
+                        stroke="none"
+                      />
+                      <rect
+                        x={hit.rotateStem.x}
+                        y={hit.rotateStem.y}
+                        width={hit.rotateStem.w}
+                        height={hit.rotateStem.h}
+                        fill="transparent"
+                        stroke="none"
+                      />
+                      <circle
+                        cx={hit.rotateKnob.cx}
+                        cy={hit.rotateKnob.cy}
+                        r={hit.rotateKnob.r}
+                        fill="transparent"
+                        stroke="none"
+                      />
+                      {skewHit.map(({ kind, x: sx, y: sy }) => {
+                        const tri = embedSkewHandleTrianglePoints(
+                          corners,
+                          sx,
+                          sy,
+                          noteZoom,
+                          embedSkewHandleVisualRadius(noteZoom) * 1.12
+                        )
+                        const pts = tri.map(([x, y]) => `${x},${y}`).join(' ')
+                        return (
+                          <polygon
+                            key={`iskh-${kind}`}
+                            points={pts}
+                            fill="transparent"
+                            stroke="none"
+                          />
+                        )
+                      })}
+                      <circle
+                        cx={del.x}
+                        cy={del.y}
+                        r={del.r}
+                        fill="transparent"
+                        stroke="none"
+                      />
+                      {cropHit.items.map(({ kind, cx: ccx, cy: ccy }) => (
+                        <rect
+                          key={`ich-${kind}`}
+                          x={ccx - cropHit.cropW / 2}
+                          y={ccy - cropHit.cropH / 2}
+                          width={cropHit.cropW}
+                          height={cropHit.cropH}
+                          rx={2 * swU}
+                          fill="transparent"
+                          stroke="none"
+                        />
+                      ))}
+                      {corners.map(([cx, cy], i) => (
+                        <circle
+                          key={`ih-${i}`}
+                          cx={cx}
+                          cy={cy}
+                          r={hit.scaleR}
+                          fill="transparent"
+                          stroke="none"
+                        />
+                      ))}
+                    </g>
+                  </>
+                )
+              })()}
+            {showLassoChrome && selectionBBox && (
+              <g pointerEvents="auto">
+                {(() => {
+                  const s = transformHandleHitShapes(selectionBBox, noteZoom)
+                  return (
+                    <>
+                      <rect
+                        x={s.moveRect.x}
+                        y={s.moveRect.y}
+                        width={s.moveRect.w}
+                        height={s.moveRect.h}
+                        fill="transparent"
+                        stroke="none"
+                      />
+                      <rect
+                        x={s.rotateStem.x}
+                        y={s.rotateStem.y}
+                        width={s.rotateStem.w}
+                        height={s.rotateStem.h}
+                        fill="transparent"
+                        stroke="none"
+                      />
+                      {s.scaleCorners.map(([x, y], i) => (
+                        <circle
+                          key={`ls-${i}`}
+                          cx={x}
+                          cy={y}
+                          r={s.scaleR}
+                          fill="transparent"
+                          stroke="none"
+                        />
+                      ))}
+                      <circle
+                        cx={s.rotateKnob.cx}
+                        cy={s.rotateKnob.cy}
+                        r={s.rotateKnob.r}
+                        fill="transparent"
+                        stroke="none"
+                      />
                     </>
                   )
                 })()}

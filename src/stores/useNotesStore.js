@@ -702,6 +702,28 @@ const useNotesStore = create((set, get) => ({
     persistence?.scheduleNoteSave?.(noteId)
   },
 
+  /** Remove one image embed by id and persist. */
+  removeImageEmbed: (noteId, embedId) => {
+    set((state) => {
+      const note = state.items[noteId]
+      if (!note || note.type !== 'note') return state
+      const prev = note.imageEmbeds ?? []
+      const next = prev.filter((e) => e.id !== embedId)
+      if (next.length === prev.length) return state
+      return {
+        items: {
+          ...state.items,
+          [noteId]: {
+            ...note,
+            imageEmbeds: next.length > 0 ? next : undefined,
+            updatedAt: Date.now(),
+          },
+        },
+      }
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
   /** Replace all strokes while a gesture is in progress (undo handled by commit/cancel). */
   setNoteStrokesLive: (noteId, strokes) => {
     if (!strokesEditSnapshots[noteId]) return

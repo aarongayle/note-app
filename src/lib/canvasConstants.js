@@ -1,11 +1,11 @@
 /** Matches template line / grid spacing in Canvas (px). */
-export const LINE_SPACING = 32
+export const LINE_SPACING = 24
 
 /** Single persisted text block id for keyboard body content. */
 export const KEYBOARD_DOC_BLOCK_ID = 'keyboard-doc'
 
 /** Body text size tuned so one line fits within one template row. */
-export const KEYBOARD_FONT_SIZE_PX = 20
+export const KEYBOARD_FONT_SIZE_PX = 15
 
 export const KEYBOARD_HORIZONTAL_PADDING_PX = 12
 
