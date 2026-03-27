@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   Pen,
   PenLine,
@@ -5,12 +6,14 @@ import {
   Eraser,
   LassoSelect,
   Type,
+  MousePointer2,
   Minus,
   Plus,
   ZoomIn,
   ZoomOut,
   Undo2,
   Redo2,
+  Columns2,
 } from 'lucide-react'
 import { NOTE_ZOOM_BUTTON_STEP } from '../lib/canvasConstants.js'
 import useNotesStore, {
@@ -19,6 +22,7 @@ import useNotesStore, {
   NOTE_ZOOM_MAX,
 } from '../stores/useNotesStore'
 import { useDefaultNoteInputMode } from '../lib/noteInputDefaults.js'
+import PickSecondNoteDialog from './PickSecondNoteDialog'
 
 const PEN_ICONS = {
   pen: Pen,
@@ -27,15 +31,25 @@ const PEN_ICONS = {
   lasso: LassoSelect,
 }
 
+/** Note id that receives toolbar actions (stylus/keyboard/zoom/undo), including split-view focus */
+function toolbarTargetNoteId(s) {
+  return s.splitViewNoteId != null
+    ? s.splitToolbarNoteId ?? s.activeNoteId
+    : s.activeNoteId
+}
+
 export default function Toolbar() {
+  const [splitPickerOpen, setSplitPickerOpen] = useState(false)
   const defaultInputMode = useDefaultNoteInputMode()
   const activeNoteId = useNotesStore((s) => s.activeNoteId)
+  const splitViewNoteId = useNotesStore((s) => s.splitViewNoteId)
+  const toolbarNoteId = useNotesStore((s) => toolbarTargetNoteId(s))
   const inputMode = useNotesStore((s) => {
-    const id = s.activeNoteId
+    const id = toolbarTargetNoteId(s)
     if (!id) return defaultInputMode
     return s.noteInputModes[id] ?? defaultInputMode
   })
-  const setNoteInputMode = useNotesStore((s) => s.setNoteInputMode)
+  const setEditorInputMode = useNotesStore((s) => s.setEditorInputMode)
 
   const activePen = useNotesStore((s) => s.activePen)
   const activeColor = useNotesStore((s) => s.activeColor)
@@ -48,17 +62,17 @@ export default function Toolbar() {
   const undoStylus = useNotesStore((s) => s.undoStylus)
   const redoStylus = useNotesStore((s) => s.redoStylus)
   const canUndoStylus = useNotesStore((s) => {
-    const id = s.activeNoteId
+    const id = toolbarTargetNoteId(s)
     if (!id) return false
     return (s.stylusUndoStacks[id]?.length ?? 0) > 0
   })
   const canRedoStylus = useNotesStore((s) => {
-    const id = s.activeNoteId
+    const id = toolbarTargetNoteId(s)
     if (!id) return false
     return (s.stylusRedoStacks[id]?.length ?? 0) > 0
   })
   const noteZoom = useNotesStore((s) => {
-    const id = s.activeNoteId
+    const id = toolbarTargetNoteId(s)
     const n = id ? s.items[id] : null
     if (!n || n.type !== 'note') return 1
     return n.zoom ?? 1
@@ -66,6 +80,7 @@ export default function Toolbar() {
 
   const currentPen = PEN_TYPES[activePen]
   const isKeyboard = inputMode === 'keyboard'
+  const isSelect = inputMode === 'select'
 
   const groupClass =
     'flex shrink-0 items-center gap-0.5 border-r border-border pr-2 sm:pr-3'
@@ -75,16 +90,29 @@ export default function Toolbar() {
       {/* Row 1 (mobile): mode, undo/redo, zoom — on sm+ merges into one row with row 2 */}
       <div
         className={`flex min-w-0 flex-wrap items-center gap-2 sm:contents ${
-          !isKeyboard
+          !isKeyboard && !isSelect
             ? 'border-b border-border pb-1.5 sm:border-0 sm:pb-0'
             : ''
         }`}
       >
-        {activeNoteId && (
+        {activeNoteId && !splitViewNoteId && (
           <div className={groupClass}>
             <button
               type="button"
-              onClick={() => setNoteInputMode(activeNoteId, 'stylus')}
+              onClick={() => setSplitPickerOpen(true)}
+              title="View two notes — side by side in landscape, stacked in portrait"
+              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
+            >
+              <Columns2 size={18} />
+            </button>
+          </div>
+        )}
+
+        {toolbarNoteId && (
+          <div className={groupClass}>
+            <button
+              type="button"
+              onClick={() => setEditorInputMode('stylus')}
               title="Stylus — draw with pen"
               className={`p-2 rounded-lg transition-colors ${
                 !isKeyboard
@@ -96,7 +124,7 @@ export default function Toolbar() {
             </button>
             <button
               type="button"
-              onClick={() => setNoteInputMode(activeNoteId, 'keyboard')}
+              onClick={() => setEditorInputMode('keyboard')}
               title="Keyboard — type text"
               className={`p-2 rounded-lg transition-colors ${
                 isKeyboard
@@ -106,14 +134,26 @@ export default function Toolbar() {
             >
               <Type size={18} />
             </button>
+            <button
+              type="button"
+              onClick={() => setEditorInputMode('select')}
+              title="Select — read and select text"
+              className={`p-2 rounded-lg transition-colors ${
+                isSelect
+                  ? 'bg-accent/20 text-accent'
+                  : 'text-text-secondary hover:bg-surface-lighter hover:text-text-primary'
+              }`}
+            >
+              <MousePointer2 size={18} />
+            </button>
           </div>
         )}
 
-        {activeNoteId && !isKeyboard && (
+        {toolbarNoteId && !isKeyboard && !isSelect && (
           <div className={groupClass}>
             <button
               type="button"
-              onClick={() => undoStylus(activeNoteId)}
+              onClick={() => undoStylus(toolbarNoteId)}
               disabled={!canUndoStylus}
               title="Undo stroke"
               className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
@@ -122,7 +162,7 @@ export default function Toolbar() {
             </button>
             <button
               type="button"
-              onClick={() => redoStylus(activeNoteId)}
+              onClick={() => redoStylus(toolbarNoteId)}
               disabled={!canRedoStylus}
               title="Redo stroke"
               className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
@@ -132,12 +172,12 @@ export default function Toolbar() {
           </div>
         )}
 
-        {activeNoteId && (
+        {toolbarNoteId && (
           <div className={groupClass}>
             <button
               type="button"
               onClick={() =>
-                zoomNoteBy(activeNoteId, 1 / NOTE_ZOOM_BUTTON_STEP)
+                zoomNoteBy(toolbarNoteId, 1 / NOTE_ZOOM_BUTTON_STEP)
               }
               disabled={noteZoom <= NOTE_ZOOM_MIN + 1e-6}
               title="Zoom out"
@@ -147,7 +187,7 @@ export default function Toolbar() {
             </button>
             <button
               type="button"
-              onClick={() => zoomNoteBy(activeNoteId, NOTE_ZOOM_BUTTON_STEP)}
+              onClick={() => zoomNoteBy(toolbarNoteId, NOTE_ZOOM_BUTTON_STEP)}
               disabled={noteZoom >= NOTE_ZOOM_MAX - 1e-6}
               title="Zoom in"
               className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
@@ -158,8 +198,8 @@ export default function Toolbar() {
         )}
       </div>
 
-      {/* Row 2 (mobile): drawing tools — hidden in keyboard mode */}
-      {!isKeyboard && (
+      {/* Row 2 (mobile): drawing tools — hidden in keyboard/select mode */}
+      {!isKeyboard && !isSelect && (
         <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
           <div className="flex shrink-0 items-center gap-1 border-r border-border pr-2 sm:pr-3">
             {Object.values(PEN_TYPES).map((pen) => {
@@ -233,6 +273,10 @@ export default function Toolbar() {
             </div>
           )}
         </div>
+      )}
+
+      {splitPickerOpen && (
+        <PickSecondNoteDialog onClose={() => setSplitPickerOpen(false)} />
       )}
     </div>
   )

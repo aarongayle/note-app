@@ -52,7 +52,10 @@ const COLORS = [
   '#2563eb', '#059669', '#7c3aed', '#db2777',
 ]
 
-/** @type {null | { onCreateFolder: (a: object) => void, onCreateNote: (a: object) => void, onDeleteItem: (a: { clientId: string }) => void, onRenameItem: (a: { clientId: string, name: string }) => void, scheduleNoteSave: (clientId: string) => void }} */
+/**
+ * @type {null | { onCreateFolder: (a: object) => void, onCreateNote: (a: object) => void, onDeleteItem: (a: { clientId: string }) => void, onRenameItem: (a: { clientId: string, name: string }) => void, scheduleNoteSave: (clientId: string) => void }}
+ * onCreateNote payload may include imageEmbeds, pdfBackgroundFileId.
+ */
 let persistence = null
 
 export function configureNotesPersistence(api) {
@@ -71,6 +74,9 @@ let eraserGestureSnapshots = {}
 
 /** Full stroke list snapshot at transform / bulk edit pointer-down */
 let strokesEditSnapshots = {}
+
+/** Snapshot of imageEmbeds at transform pointer-down */
+let imageEmbedEditSnapshots = {}
 
 /** @param {unknown} s */
 function cloneStroke(s) {
@@ -97,9 +103,13 @@ function strokesArraysEqual(a, b) {
 const useNotesStore = create((set, get) => ({
   items: {},
   rootIds: [],
-  /** @type {Record<string, 'stylus' | 'keyboard'>} Per-note input mode (not synced). */
+  /** @type {Record<string, 'stylus' | 'keyboard' | 'select'>} Per-note input mode; toolbar changes apply to all open editor panes (see setEditorInputMode). */
   noteInputModes: {},
   activeNoteId: null,
+  /** Second note id when comparing two notes side by side; null = single canvas */
+  splitViewNoteId: null,
+  /** Which note receives toolbar actions in split view; null = active (first) pane */
+  splitToolbarNoteId: null,
   activePen: 'pen',
   activeColor: COLORS[0],
   penSize: 3,
@@ -111,6 +121,13 @@ const useNotesStore = create((set, get) => ({
   stylusUndoStacks: {},
   /** @type {Record<string, { prev: unknown[]; next: unknown[] }[]>} */
   stylusRedoStacks: {},
+  /**
+   * In-memory (not persisted): logical scroll height (px) needed to display
+   * all rendered PDF/EPUB pages, set by PdfNoteBackground after each render.
+   * Used to determine how much excess canvas can be trimmed after extension.
+   * @type {Record<string, number>}
+   */
+  pdfBaseScrollHeights: {},
 
   hydrateFromServer: ({ items: serverItems, rootIds: serverRootIds }) =>
     set((state) => {
@@ -166,14 +183,34 @@ const useNotesStore = create((set, get) => ({
         return next
       }
 
+      const nextActive =
+        state.activeNoteId && mergedItems[state.activeNoteId]
+          ? state.activeNoteId
+          : null
+      let nextSplit = state.splitViewNoteId
+      let nextSplitToolbar = state.splitToolbarNoteId
+      if (
+        !nextActive ||
+        !nextSplit ||
+        nextSplit === nextActive ||
+        mergedItems[nextSplit]?.type !== 'note'
+      ) {
+        nextSplit = null
+        nextSplitToolbar = null
+      } else if (
+        nextSplitToolbar &&
+        mergedItems[nextSplitToolbar]?.type !== 'note'
+      ) {
+        nextSplitToolbar = null
+      }
+
       return {
         items: mergedItems,
         rootIds: mergedRootIds,
         isTreeReady: true,
-        activeNoteId:
-          state.activeNoteId && mergedItems[state.activeNoteId]
-            ? state.activeNoteId
-            : null,
+        activeNoteId: nextActive,
+        splitViewNoteId: nextSplit,
+        splitToolbarNoteId: nextSplitToolbar,
         stylusUndoStacks: pruneStacks(state.stylusUndoStacks),
         stylusRedoStacks: pruneStacks(state.stylusRedoStacks),
       }
@@ -223,7 +260,14 @@ const useNotesStore = create((set, get) => ({
     return id
   },
 
-  createNote: (name, template = 'blank', parentId = null) => {
+  /**
+   * @param {object} [media]
+   * @param {Array<{ id: string, fileId: string, x: number, y: number, width: number, height: number, rotation: number }>} [media.imageEmbeds]
+   * @param {string} [media.pdfBackgroundFileId]
+   * @param {number} [media.importDocFontSizePt]
+   * @param {{ top: number, right: number, bottom: number, left: number }} [media.importEpubMargins]
+   */
+  createNote: (name, template = 'blank', parentId = null, media = null) => {
     const id = uuidv4()
     const createdAt = Date.now()
     const before = useNotesStore.getState()
@@ -232,14 +276,28 @@ const useNotesStore = create((set, get) => ({
         ? before.items[parentId].childIds.length
         : before.rootIds.length
 
+    const imageEmbeds = media?.imageEmbeds?.length
+      ? [...media.imageEmbeds]
+      : []
+    const pdfBackgroundFileId = media?.pdfBackgroundFileId
+    const importDocFontSizePt = media?.importDocFontSizePt
+    const importEpubMargins = media?.importEpubMargins
+    const noteTemplate =
+      pdfBackgroundFileId ? 'blank' : template
+
     const note = {
       id,
       type: 'note',
       name,
       parentId,
-      template,
+      template: noteTemplate,
       strokes: [],
       textBlocks: [],
+      textBoxes: [],
+      imageEmbeds,
+      pdfBackgroundFileId,
+      importDocFontSizePt,
+      importEpubMargins,
       scrollHeight: MIN_NOTE_SCROLL_HEIGHT,
       zoom: 1,
       createdAt,
@@ -267,13 +325,56 @@ const useNotesStore = create((set, get) => ({
       parentClientId: parentId,
       sortIndex,
       createdAt,
-      template,
+      template: noteTemplate,
+      imageEmbeds: imageEmbeds.length > 0 ? imageEmbeds : undefined,
+      pdfBackgroundFileId,
+      importDocFontSizePt,
+      importEpubMargins,
     })
 
     return id
   },
 
-  setActiveNote: (id) => set({ activeNoteId: id }),
+  setActiveNote: (id) =>
+    set({
+      activeNoteId: id,
+      splitViewNoteId: null,
+      splitToolbarNoteId: null,
+    }),
+
+  enterSplitViewWithNote: (secondNoteId) => {
+    set((state) => {
+      const first = state.activeNoteId
+      if (!first || !secondNoteId || first === secondNoteId) return state
+      const a = state.items[first]
+      const b = state.items[secondNoteId]
+      if (a?.type !== 'note' || b?.type !== 'note') return state
+      return {
+        splitViewNoteId: secondNoteId,
+        splitToolbarNoteId: null,
+      }
+    })
+  },
+
+  setSplitToolbarNoteId: (id) => set({ splitToolbarNoteId: id }),
+
+  /** @param {'first' | 'second'} which — first = active note pane, second = split pane */
+  exitSplitViewFromPane: (which) => {
+    set((state) => {
+      if (!state.splitViewNoteId) return state
+      if (which === 'first') {
+        return {
+          activeNoteId: state.splitViewNoteId,
+          splitViewNoteId: null,
+          splitToolbarNoteId: null,
+        }
+      }
+      return {
+        splitViewNoteId: null,
+        splitToolbarNoteId: null,
+      }
+    })
+  },
 
   deleteItem: (id) => {
     set((state) => {
@@ -301,6 +402,7 @@ const useNotesStore = create((set, get) => ({
         delete stylusUndoStacks[rid]
         delete stylusRedoStacks[rid]
         delete eraserGestureSnapshots[rid]
+        delete imageEmbedEditSnapshots[rid]
       }
 
       let rootIds = state.rootIds.filter((rid) => rid !== id)
@@ -314,10 +416,22 @@ const useNotesStore = create((set, get) => ({
       const activeNoteId =
         state.activeNoteId === id ? null : state.activeNoteId
 
+      let splitViewNoteId = state.splitViewNoteId
+      let splitToolbarNoteId = state.splitToolbarNoteId
+      if (splitViewNoteId && removedIds.includes(splitViewNoteId)) {
+        splitViewNoteId = null
+        splitToolbarNoteId = null
+      }
+      if (splitToolbarNoteId && removedIds.includes(splitToolbarNoteId)) {
+        splitToolbarNoteId = null
+      }
+
       return {
         items,
         rootIds,
         activeNoteId,
+        splitViewNoteId,
+        splitToolbarNoteId,
         noteInputModes,
         stylusUndoStacks,
         stylusRedoStacks,
@@ -492,6 +606,59 @@ const useNotesStore = create((set, get) => ({
     persistence?.scheduleNoteSave?.(noteId)
   },
 
+  beginImageEmbedEditGesture: (noteId) => {
+    const note = get().items[noteId]
+    if (note?.type === 'note') {
+      imageEmbedEditSnapshots[noteId] = structuredClone(note.imageEmbeds ?? [])
+    }
+  },
+
+  cancelImageEmbedEditGesture: (noteId) => {
+    const snapshot = imageEmbedEditSnapshots[noteId]
+    delete imageEmbedEditSnapshots[noteId]
+    if (!snapshot) return
+    set((state) => {
+      const note = state.items[noteId]
+      if (!note || note.type !== 'note') return state
+      return {
+        items: {
+          ...state.items,
+          [noteId]: {
+            ...note,
+            imageEmbeds: snapshot,
+            updatedAt: Date.now(),
+          },
+        },
+      }
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
+  commitImageEmbedEditGesture: (noteId) => {
+    delete imageEmbedEditSnapshots[noteId]
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
+  /** @param {Array<{ id: string, fileId: string, x: number, y: number, width: number, height: number, rotation: number }>} embeds */
+  setNoteImageEmbedsLive: (noteId, embeds) => {
+    if (!imageEmbedEditSnapshots[noteId]) return
+    set((state) => {
+      const note = state.items[noteId]
+      if (!note || note.type !== 'note') return state
+      return {
+        items: {
+          ...state.items,
+          [noteId]: {
+            ...note,
+            imageEmbeds: embeds.map((e) => ({ ...e })),
+            updatedAt: Date.now(),
+          },
+        },
+      }
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
   /** Replace all strokes while a gesture is in progress (undo handled by commit/cancel). */
   setNoteStrokesLive: (noteId, strokes) => {
     if (!strokesEditSnapshots[noteId]) return
@@ -575,6 +742,64 @@ const useNotesStore = create((set, get) => ({
     persistence?.scheduleNoteSave?.(noteId)
   },
 
+  /** @param {{ id: string, x: number, y: number, width: number, content: string }} textBox */
+  createTextBox: (noteId, textBox) => {
+    set((state) => {
+      const note = state.items[noteId]
+      if (!note || note.type !== 'note') return state
+      return {
+        items: {
+          ...state.items,
+          [noteId]: {
+            ...note,
+            textBoxes: [...(note.textBoxes ?? []), textBox],
+            updatedAt: Date.now(),
+          },
+        },
+      }
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
+  /** @param {Partial<{ x: number, y: number, width: number, content: string }>} patch */
+  updateTextBox: (noteId, boxId, patch) => {
+    set((state) => {
+      const note = state.items[noteId]
+      if (!note || note.type !== 'note') return state
+      return {
+        items: {
+          ...state.items,
+          [noteId]: {
+            ...note,
+            textBoxes: (note.textBoxes ?? []).map((b) =>
+              b.id === boxId ? { ...b, ...patch } : b
+            ),
+            updatedAt: Date.now(),
+          },
+        },
+      }
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
+  deleteTextBox: (noteId, boxId) => {
+    set((state) => {
+      const note = state.items[noteId]
+      if (!note || note.type !== 'note') return state
+      return {
+        items: {
+          ...state.items,
+          [noteId]: {
+            ...note,
+            textBoxes: (note.textBoxes ?? []).filter((b) => b.id !== boxId),
+            updatedAt: Date.now(),
+          },
+        },
+      }
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
   extendScrollHeight: (noteId, amount = 1000) => {
     set((state) => {
       const note = state.items[noteId]
@@ -614,10 +839,55 @@ const useNotesStore = create((set, get) => ({
     persistence?.scheduleNoteSave?.(noteId)
   },
 
+  /**
+   * Record the logical scroll height (px) that covers all rendered PDF/EPUB
+   * pages for a note.  In-memory only — not persisted to Convex.
+   */
+  setPdfBaseScrollHeight: (noteId, height) => {
+    set((state) => ({
+      pdfBaseScrollHeights: { ...state.pdfBaseScrollHeights, [noteId]: height },
+    }))
+  },
+
+  /**
+   * Reduce a note's scroll height to `targetHeight` (clamped to
+   * MIN_NOTE_SCROLL_HEIGHT).  Only shrinks — never grows.
+   */
+  trimScrollHeight: (noteId, targetHeight) => {
+    set((state) => {
+      const note = state.items[noteId]
+      if (!note || note.type !== 'note') return state
+      const clamped = Math.max(MIN_NOTE_SCROLL_HEIGHT, Math.ceil(targetHeight))
+      if (note.scrollHeight <= clamped) return state
+      return {
+        items: {
+          ...state.items,
+          [noteId]: { ...note, scrollHeight: clamped, updatedAt: Date.now() },
+        },
+      }
+    })
+    persistence?.scheduleNoteSave?.(noteId)
+  },
+
   setNoteInputMode: (noteId, mode) =>
     set((state) => ({
       noteInputModes: { ...state.noteInputModes, [noteId]: mode },
     })),
+
+  /** Stylus/keyboard toggle from toolbar: keep split panes in sync (same mode on both notes). */
+  setEditorInputMode: (mode) =>
+    set((state) => {
+      const ids = [
+        state.activeNoteId,
+        state.splitViewNoteId,
+      ].filter((id) => id && state.items[id]?.type === 'note')
+      if (ids.length === 0) return state
+      const noteInputModes = { ...state.noteInputModes }
+      for (const id of ids) {
+        noteInputModes[id] = mode
+      }
+      return { noteInputModes }
+    }),
 
   /** @param {number} zoom Absolute zoom clamped to NOTE_ZOOM_MIN..NOTE_ZOOM_MAX */
   setNoteZoom: (noteId, zoom) => {

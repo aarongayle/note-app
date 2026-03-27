@@ -1,10 +1,11 @@
 import { LINE_SPACING } from './canvasConstants.js'
+import { bottomExtentForEmbed } from './imageEmbedGeometry.js'
 
 /** Matches default note canvas height in the store / Convex. */
 export const MIN_NOTE_SCROLL_HEIGHT = 2000
 
-/** Padding below the lowest ink so the last stroke isn’t flush with the edge. */
-const BOTTOM_CONTENT_PAD = 280
+/** Padding below the lowest ink so the last stroke isn't flush with the edge. */
+export const BOTTOM_CONTENT_PAD = 280
 
 function bottomFromStrokes(strokes) {
   let bottom = 0
@@ -30,6 +31,30 @@ function bottomFromTextBlocks(textBlocks) {
   return approxWrappedLines * LINE_SPACING
 }
 
+function bottomFromImageEmbeds(imageEmbeds) {
+  let bottom = 0
+  for (const e of imageEmbeds ?? []) {
+    bottom = Math.max(bottom, bottomExtentForEmbed(e))
+  }
+  return bottom
+}
+
+/**
+ * Raw content bottom (logical px) from strokes, keyboard text, and image
+ * embeds — without clamping or padding.  Text boxes are excluded because
+ * their rendered height is only known in the client; callers that have access
+ * to measured text-box heights should fold them in separately.
+ *
+ * @param {{ strokes?: unknown[], textBlocks?: { content: string }[], imageEmbeds?: unknown[] }} note
+ */
+export function contentBottomForNote(note) {
+  return Math.max(
+    bottomFromStrokes(note.strokes),
+    bottomFromTextBlocks(note.textBlocks),
+    bottomFromImageEmbeds(note.imageEmbeds)
+  )
+}
+
 /**
  * Scroll height to persist: tall enough for ink and keyboard text, but not extra
  * canvas added only because the user scrolled.
@@ -37,10 +62,15 @@ function bottomFromTextBlocks(textBlocks) {
  * @param {{ strokes?: unknown[], textBlocks?: { content: string }[] }} note
  */
 export function persistedScrollHeightForNote(note) {
-  const bottom = Math.max(
-    bottomFromStrokes(note.strokes),
-    bottomFromTextBlocks(note.textBlocks)
-  )
+  if (note.pdfBackgroundFileId) {
+    const contentBottom = contentBottomForNote(note)
+    const fromPdf = note.scrollHeight ?? MIN_NOTE_SCROLL_HEIGHT
+    return Math.max(
+      MIN_NOTE_SCROLL_HEIGHT,
+      Math.ceil(Math.max(fromPdf, contentBottom + BOTTOM_CONTENT_PAD))
+    )
+  }
+  const bottom = contentBottomForNote(note)
 
   if (bottom <= 0) return MIN_NOTE_SCROLL_HEIGHT
 

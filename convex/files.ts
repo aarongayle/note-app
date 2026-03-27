@@ -25,7 +25,7 @@ export const saveUploadedFile = mutation({
     if (existing !== null) {
       throw new Error("This upload is already registered.");
     }
-    await ctx.db.insert("files", {
+    return await ctx.db.insert("files", {
       storageId: args.storageId,
       userId,
       name: args.name,
@@ -57,6 +57,28 @@ export const getDownloadUrl = query({
     }
     const url = await ctx.storage.getUrl(file.storageId);
     return url ?? null;
+  },
+});
+
+/** Signed URLs for note image/PDF embeds (same ownership rules as single-file download). */
+export const getBatchDownloadUrls = query({
+  args: { fileIds: v.array(v.id("files")) },
+  handler: async (ctx, { fileIds }) => {
+    const { userId } = await requireAllowedUser(ctx);
+    const out: Record<string, string | null> = {};
+    const seen = new Set<string>();
+    for (const fileId of fileIds) {
+      const key = fileId as string;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const file = await ctx.db.get(fileId);
+      if (file === null || file.userId !== userId) {
+        out[key] = null;
+        continue;
+      }
+      out[key] = (await ctx.storage.getUrl(file.storageId)) ?? null;
+    }
+    return out;
   },
 });
 

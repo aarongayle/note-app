@@ -181,7 +181,6 @@ const HANDLE_HIT_RADIUS = 12
 export function hitTransformHandle(x, y, bbox) {
   const { minX: mx, minY: my, maxX: Mx, maxY: My } = bbox
   const cx = (mx + Mx) / 2
-  const cy = (my + My) / 2
   const rx = cx
   const ry = my - LASSO_ROTATE_OFFSET
   if (Math.hypot(x - rx, y - ry) < HANDLE_HIT_RADIUS + 8) return 'rotate'

@@ -2,6 +2,7 @@ import { ConvexError, v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
+import { imageEmbedFieldValidator } from "./noteValidators";
 import { requireAllowedUser } from "./lib/access";
 
 type DbCtx = QueryCtx | MutationCtx;
@@ -23,6 +24,47 @@ const textBlockValidator = v.object({
   id: v.string(),
   content: v.string(),
 });
+
+const textBoxValidator = v.object({
+  id: v.string(),
+  x: v.number(),
+  y: v.number(),
+  width: v.number(),
+  content: v.string(),
+});
+
+const importEpubMarginsValidator = v.object({
+  top: v.number(),
+  right: v.number(),
+  bottom: v.number(),
+  left: v.number(),
+});
+
+const EPUB_MARGIN_MIN = 24;
+const EPUB_MARGIN_MAX = 120;
+
+function clampEpubMarginSide(n: number): number {
+  return Math.min(EPUB_MARGIN_MAX, Math.max(EPUB_MARGIN_MIN, n));
+}
+
+function clampEpubMargins(m: {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}): {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+} {
+  return {
+    top: clampEpubMarginSide(m.top),
+    right: clampEpubMarginSide(m.right),
+    bottom: clampEpubMarginSide(m.bottom),
+    left: clampEpubMarginSide(m.left),
+  };
+}
 
 async function getRowByClientId(
   ctx: DbCtx,
@@ -46,6 +88,20 @@ async function assertParentBelongsToUser(
   const parent = await getRowByClientId(ctx, userId, parentClientId);
   if (parent === null || parent.itemType !== "folder") {
     throw new ConvexError("Parent folder not found.");
+  }
+}
+
+async function assertFilesOwnedByUser(
+  ctx: DbCtx,
+  userId: Id<"users">,
+  fileIds: Id<"files">[],
+) {
+  const unique = [...new Set(fileIds)];
+  for (const fileId of unique) {
+    const file = await ctx.db.get(fileId);
+    if (file === null || file.userId !== userId) {
+      throw new ConvexError("File not found.");
+    }
   }
 }
 
@@ -122,6 +178,11 @@ export const createNote = mutation({
     sortIndex: v.number(),
     createdAt: v.number(),
     template: v.string(),
+    imageEmbeds: v.optional(v.array(imageEmbedFieldValidator)),
+    pdfBackgroundFileId: v.optional(v.id("files")),
+    importDocFontSizePt: v.optional(v.number()),
+    importEpubMarginPt: v.optional(v.number()),
+    importEpubMargins: v.optional(importEpubMarginsValidator),
   },
   handler: async (ctx, args) => {
     const { userId } = await requireAllowedUser(ctx);
@@ -132,7 +193,30 @@ export const createNote = mutation({
     const existing = await getRowByClientId(ctx, userId, args.clientId);
     if (existing !== null) return;
     await assertParentBelongsToUser(ctx, userId, args.parentClientId);
+    const embeds = args.imageEmbeds ?? [];
+    const pdfId = args.pdfBackgroundFileId;
+    const fileIds: Id<"files">[] = [...embeds.map((e) => e.fileId)];
+    if (pdfId !== undefined) {
+      fileIds.push(pdfId);
+    }
+    if (fileIds.length > 0) {
+      await assertFilesOwnedByUser(ctx, userId, fileIds);
+    }
     const now = args.createdAt;
+    const template =
+      pdfId !== undefined ? "blank" : args.template;
+    const fontPt =
+      args.importDocFontSizePt !== undefined
+        ? Math.min(48, Math.max(10, args.importDocFontSizePt))
+        : undefined;
+    const epubMarginsRow =
+      args.importEpubMargins !== undefined
+        ? clampEpubMargins(args.importEpubMargins)
+        : undefined;
+    const epubMargin =
+      args.importEpubMarginPt !== undefined && epubMarginsRow === undefined
+        ? Math.min(EPUB_MARGIN_MAX, Math.max(EPUB_MARGIN_MIN, args.importEpubMarginPt))
+        : undefined;
     await ctx.db.insert("noteItems", {
       userId,
       clientId: args.clientId,
@@ -142,9 +226,16 @@ export const createNote = mutation({
       sortIndex: args.sortIndex,
       createdAt: now,
       updatedAt: now,
-      template: args.template,
+      template,
       strokes: [],
       textBlocks: [],
+      imageEmbeds: embeds.length > 0 ? embeds : undefined,
+      ...(pdfId !== undefined ? { pdfBackgroundFileId: pdfId } : {}),
+      ...(fontPt !== undefined ? { importDocFontSizePt: fontPt } : {}),
+      ...(epubMarginsRow !== undefined
+        ? { importEpubMargins: epubMarginsRow }
+        : {}),
+      ...(epubMargin !== undefined ? { importEpubMarginPt: epubMargin } : {}),
       scrollHeight: 2000,
       zoom: 1,
     });
@@ -192,9 +283,15 @@ export const updateNote = mutation({
     clientId: v.string(),
     strokes: v.array(strokeValidator),
     textBlocks: v.array(textBlockValidator),
+    textBoxes: v.array(textBoxValidator),
+    imageEmbeds: v.array(imageEmbedFieldValidator),
+    pdfBackgroundFileId: v.union(v.null(), v.id("files")),
     scrollHeight: v.number(),
     zoom: v.number(),
     updatedAt: v.number(),
+    importDocFontSizePt: v.number(),
+    importEpubMarginPt: v.union(v.null(), v.number()),
+    importEpubMargins: v.union(v.null(), importEpubMarginsValidator),
   },
   handler: async (ctx, args) => {
     const { userId } = await requireAllowedUser(ctx);
@@ -202,15 +299,52 @@ export const updateNote = mutation({
     if (row === null || row.itemType !== "note") {
       throw new ConvexError("Note not found.");
     }
+    const fileIds: Id<"files">[] = args.imageEmbeds.map((e) => e.fileId);
+    if (args.pdfBackgroundFileId !== null) {
+      fileIds.push(args.pdfBackgroundFileId);
+    }
+    if (fileIds.length > 0) {
+      await assertFilesOwnedByUser(ctx, userId, fileIds);
+    }
     const z = Number.isFinite(args.zoom)
       ? Math.min(NOTE_ZOOM_MAX, Math.max(NOTE_ZOOM_MIN, args.zoom))
       : 1;
+    const fontPt = Math.min(48, Math.max(10, args.importDocFontSizePt));
+    let nextEpubMargins: {
+      top: number;
+      right: number;
+      bottom: number;
+      left: number;
+    } | undefined;
+    let nextEpubMarginPt: number | undefined;
+    if (args.importEpubMargins !== null) {
+      nextEpubMargins = clampEpubMargins(args.importEpubMargins);
+      nextEpubMarginPt = undefined;
+    } else if (args.importEpubMarginPt !== null) {
+      nextEpubMarginPt = Math.min(
+        EPUB_MARGIN_MAX,
+        Math.max(EPUB_MARGIN_MIN, args.importEpubMarginPt),
+      );
+      nextEpubMargins = undefined;
+    } else {
+      nextEpubMargins = undefined;
+      nextEpubMarginPt = undefined;
+    }
     await ctx.db.patch(row._id, {
       strokes: args.strokes,
       textBlocks: args.textBlocks,
+      textBoxes: args.textBoxes.length > 0 ? args.textBoxes : undefined,
+      imageEmbeds: args.imageEmbeds.length > 0 ? args.imageEmbeds : undefined,
+      pdfBackgroundFileId:
+        args.pdfBackgroundFileId === null
+          ? undefined
+          : args.pdfBackgroundFileId,
       scrollHeight: args.scrollHeight,
       zoom: z,
       updatedAt: args.updatedAt,
+      importDocFontSizePt: fontPt,
+      importEpubMargins: nextEpubMargins,
+      importEpubMarginPt: nextEpubMarginPt,
     });
   },
 });

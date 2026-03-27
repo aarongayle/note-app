@@ -49,3 +49,109 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
 }
+
+/* pdfjs text layer — transparent spans positioned over the PDF canvas */
+.pdfTextLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 1;
+  /* CSS variables needed by child span rules */
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+  /* non-selectable by default; enabled via .pdf-text-selectable ancestor */
+  pointer-events: none;
+  user-select: none;
+}
+
+.pdf-text-selectable .pdfTextLayer {
+  pointer-events: auto;
+  user-select: text;
+  cursor: text;
+}
+
+/* Each text item span: font size and squish/stretch transform driven by pdfjs CSS vars */
+.pdfTextLayer > :not(.markedContent),
+.pdfTextLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.pdfTextLayer .markedContent {
+  display: contents;
+}
+
+.pdfTextLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+
+.pdfTextLayer span[role="img"] {
+  user-select: none;
+  cursor: default;
+}
+
+/* ── PDF Annotation Layer ───────────────────────────────────────────────── */
+/*
+ * Links are NOT merged into the text layer — pdf.js renders parallel geometry:
+ * transparent text spans (selection) vs <section class="linkAnnotation"><a>.
+ * Quadrilateral clip SVG is inserted before the <a>; without pointer-events: none
+ * on that SVG, it can sit on top of the anchor and steal clicks (internal links).
+ */
+.pdfAnnotationLayer {
+  position: absolute;
+  inset: 0;
+  /* Fallback only: PdfNoteBackground sets explicit px after render (matches pageWrapper). */
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  transform-origin: 0 0;
+  pointer-events: none;
+  /* Must stay above .pdfTextLayer (z-index: 1) so link hit targets win */
+  z-index: 5;
+}
+
+.pdfAnnotationLayer section {
+  position: absolute;
+  transform-origin: 0 0;
+  box-sizing: border-box;
+  /* Non-interactive by default; enabled selectively in text-select mode */
+  pointer-events: none;
+}
+
+.pdf-text-selectable .pdfAnnotationLayer svg.quadrilateralsContainer {
+  pointer-events: none;
+}
+
+/* In text-select mode, link annotations become clickable */
+.pdf-text-selectable .pdfAnnotationLayer .linkAnnotation {
+  pointer-events: auto;
+}
+
+.pdf-text-selectable .pdfAnnotationLayer .linkAnnotation > a {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  /* Above quadrilateral SVG siblings inside the section (same stacking context) */
+  z-index: 1;
+}
+
+/* Subtle yellow highlight on hover so users know the link is clickable */
+.pdf-text-selectable .pdfAnnotationLayer .linkAnnotation > a:hover {
+  background-color: rgb(255 255 0 / 0.25);
+}

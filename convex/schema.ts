@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { authTables } from "@convex-dev/auth/server";
 import { v } from "convex/values";
+import { imageEmbedFieldValidator } from "./noteValidators";
 
 const strokeValidator = v.object({
   points: v.array(v.array(v.number())),
@@ -18,6 +19,15 @@ const strokeValidator = v.object({
 const textBlockValidator = v.object({
   id: v.string(),
   content: v.string(),
+});
+
+const textBoxValidator = v.object({
+  id: v.string(),
+  x: v.number(),
+  y: v.number(),
+  width: v.number(),
+  content: v.string(),
+  rotation: v.optional(v.number()),
 });
 
 export default defineSchema({
@@ -47,6 +57,26 @@ export default defineSchema({
     template: v.optional(v.string()),
     strokes: v.optional(v.array(strokeValidator)),
     textBlocks: v.optional(v.array(textBlockValidator)),
+    textBoxes: v.optional(v.array(textBoxValidator)),
+    /** Pinned images (drawn above background, below strokes). */
+    imageEmbeds: v.optional(v.array(imageEmbedFieldValidator)),
+    /** PDF displayed as full-width stacked pages behind ink/text. */
+    pdfBackgroundFileId: v.optional(v.id("files")),
+    /**
+     * Body text size (pt) chosen at import; scales rasterized PDF vs note typography (baseline 20).
+     */
+    importDocFontSizePt: v.optional(v.number()),
+    /** EPUB conversion margin (pt); legacy uniform margin for older notes. */
+    importEpubMarginPt: v.optional(v.number()),
+    /** Per-side EPUB→PDF margins (pt); preferred when present. */
+    importEpubMargins: v.optional(
+      v.object({
+        top: v.number(),
+        right: v.number(),
+        bottom: v.number(),
+        left: v.number(),
+      }),
+    ),
     scrollHeight: v.optional(v.number()),
     /** View zoom (1 = 100%), clamped client-side to ~0.5–3 */
     zoom: v.optional(v.number()),

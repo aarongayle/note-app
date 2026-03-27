@@ -8,7 +8,6 @@ import {
 } from 'react'
 import useNotesStore, { PEN_TYPES } from '../stores/useNotesStore'
 import {
-  getDefaultNoteInputMode,
   useDefaultNoteInputMode,
   usePhoneClassViewport,
 } from '../lib/noteInputDefaults.js'
@@ -21,23 +20,41 @@ import {
   LASSO_HANDLE_RADIUS,
 } from '../lib/lassoGeometry.js'
 import {
+  axisAlignedBBoxForRotatedRect,
+  pointInRotatedRect,
+} from '../lib/imageEmbedGeometry.js'
+import {
   translateStroke,
   rotateStrokeAround,
   scaleStrokeAround,
   cloneStrokeList,
 } from '../lib/strokeSelectionTransform.js'
+import { LINE_SPACING, KEYBOARD_FONT_SIZE_PX } from '../lib/canvasConstants.js'
 import {
-  LINE_SPACING,
-  KEYBOARD_FONT_SIZE_PX,
-  KEYBOARD_HORIZONTAL_PADDING_PX,
-  CANVAS_TYPING_INK,
-} from '../lib/canvasConstants.js'
-import {
-  estimatedWrappedTextBottomLayoutPx,
-  valueAndCaretForCanvasClick,
-} from '../lib/keyboardTextLayout.js'
+  contentBottomForNote,
+  BOTTOM_CONTENT_PAD,
+  MIN_NOTE_SCROLL_HEIGHT,
+} from '../lib/noteScrollBounds.js'
+import { useQuery } from 'convex/react'
+import { api } from '../../convex/_generated/api.js'
+import { v4 as uuidv4 } from 'uuid'
+import PdfNoteBackground from './PdfNoteBackground.jsx'
+import ImageEmbedsLayer from './ImageEmbedsLayer.jsx'
+import TextBoxesLayer from './TextBoxesLayer.jsx'
 
-const TEXT_PAD_TOP_PX = 2
+/** Ray-casting point-in-polygon test for lasso hit detection. */
+function pointInPolygon(px, py, polygon) {
+  let inside = false
+  const n = polygon.length
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1]
+    const xj = polygon[j][0], yj = polygon[j][1]
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside
+    }
+  }
+  return inside
+}
 
 /** @param {number} lineSpacingPx Scaled line / grid spacing */
 function templateStylesForSpacing(lineSpacingPx) {
@@ -62,17 +79,15 @@ function templateStylesForSpacing(lineSpacingPx) {
   }
 }
 
-function joinTextBlocks(blocks) {
-  return (blocks ?? []).map((b) => b.content).join('\n')
-}
 
-export default function Canvas() {
+/**
+ * @param {{ noteId?: string }} props — When `noteId` is set, this canvas edits that note (split view). Otherwise uses the store `activeNoteId`.
+ */
+export default function Canvas({ noteId: noteIdProp } = {}) {
   const containerRef = useRef(null)
-  /** Viewport width of the scroll container — logical note width for strokes / keyboard. */
+  /** Viewport width of the scroll container — logical note width for strokes. */
   const [layoutW, setLayoutW] = useState(0)
   const svgRef = useRef(null)
-  const textareaRef = useRef(null)
-  const measureCanvasRef = useRef(null)
   const currentStrokeRef = useRef(null)
   const currentPathRef = useRef(null)
   const isDrawingRef = useRef(false)
@@ -82,21 +97,37 @@ export default function Canvas() {
   const lassoDraftRef = useRef(null)
   /** @type {React.MutableRefObject<null | { kind: 'move' | 'rotate' | 'scale'; startX: number; startY: number; baseStrokes: unknown[]; indices: number[]; centerX: number; centerY: number; startDist: number; angle0: number }>} */
   const transformGestureRef = useRef(null)
+  /** @type {React.MutableRefObject<null | { kind: 'move' | 'rotate' | 'scale'; startX: number; startY: number; baseEmbed: object; embedId: string; centerX: number; centerY: number; startDist: number; angle0: number; baseRotation: number }>} */
+  const imageTransformRef = useRef(null)
+  /** @type {React.MutableRefObject<null | { embedId: string; startX: number; startY: number }>} */
+  const imageTapRef = useRef(null)
 
   const [selectedStrokeIndices, setSelectedStrokeIndices] = useState([])
+  const [selectedImageEmbedId, setSelectedImageEmbedId] = useState(null)
+  const [selectedTextBoxIds, setSelectedTextBoxIds] = useState([])
+  const [editingTextBoxId, setEditingTextBoxId] = useState(null)
+  /** Heights reported by TextBoxesLayer — used for SVG chrome placement. */
+  const textBoxHeightsRef = useRef({})
   const [lassoDraftPoints, setLassoDraftPoints] = useState(null)
 
   const defaultInputMode = useDefaultNoteInputMode()
   const phoneClassViewport = usePhoneClassViewport()
-  const note = useNotesStore((s) =>
-    s.activeNoteId ? s.items[s.activeNoteId] : null
-  )
+  const splitViewNoteId = useNotesStore((s) => s.splitViewNoteId)
+  const setSplitToolbarNoteId = useNotesStore((s) => s.setSplitToolbarNoteId)
+
+  const note = useNotesStore((s) => {
+    const id = noteIdProp ?? s.activeNoteId
+    return id ? s.items[id] : null
+  })
   const inputMode = useNotesStore((s) => {
-    const id = s.activeNoteId
+    const id = noteIdProp ?? s.activeNoteId
     if (!id) return defaultInputMode
     return s.noteInputModes[id] ?? defaultInputMode
   })
   const isKeyboard = inputMode === 'keyboard'
+  const isSelect = inputMode === 'select'
+  /** True when the SVG drawing layer should be passive (no ink, no lasso) */
+  const isPassive = isKeyboard || isSelect
 
   const activePen = useNotesStore((s) => s.activePen)
   const activeColor = useNotesStore((s) => s.activeColor)
@@ -119,34 +150,115 @@ export default function Canvas() {
     (s) => s.commitStrokesEditGesture
   )
   const setNoteStrokesLive = useNotesStore((s) => s.setNoteStrokesLive)
+  const beginImageEmbedEditGesture = useNotesStore(
+    (s) => s.beginImageEmbedEditGesture
+  )
+  const commitImageEmbedEditGesture = useNotesStore(
+    (s) => s.commitImageEmbedEditGesture
+  )
+  const cancelImageEmbedEditGesture = useNotesStore(
+    (s) => s.cancelImageEmbedEditGesture
+  )
+  const setNoteImageEmbedsLive = useNotesStore(
+    (s) => s.setNoteImageEmbedsLive
+  )
   const cancelStrokesEditGesture = useNotesStore(
     (s) => s.cancelStrokesEditGesture
   )
   const extendScrollHeight = useNotesStore((s) => s.extendScrollHeight)
-  const ensureNoteScrollHeight = useNotesStore((s) => s.ensureNoteScrollHeight)
-  const setNoteKeyboardContent = useNotesStore((s) => s.setNoteKeyboardContent)
+  const trimScrollHeight = useNotesStore((s) => s.trimScrollHeight)
+  const createTextBox = useNotesStore((s) => s.createTextBox)
+  const updateTextBox = useNotesStore((s) => s.updateTextBox)
+  const deleteTextBox = useNotesStore((s) => s.deleteTextBox)
+  // Delete selected textboxes when the Delete/Backspace key is pressed while
+  // the lasso tool is active and no textbox textarea is focused.
+  useEffect(() => {
+    if (!note) return
+    const onKeyDown = (e) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTextBoxIds.length > 0) {
+        const active = document.activeElement
+        if (active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT')) return
+        for (const id of selectedTextBoxIds) {
+          deleteTextBox(note.id, id)
+        }
+        setSelectedTextBoxIds([])
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [note, selectedTextBoxIds, deleteTextBox])
   const noteZoom = useNotesStore((s) => {
-    const id = s.activeNoteId
+    const id = noteIdProp ?? s.activeNoteId
     const n = id ? s.items[id] : null
     if (!n || n.type !== 'note') return 1
     return n.zoom ?? 1
   })
 
-  const draftTextRef = useRef('')
-  const wasKeyboardRef = useRef(false)
-  const prevActiveNoteIdRef = useRef(null)
-
-  const getMeasureCtx = useCallback((ta) => {
-    if (!measureCanvasRef.current) {
-      measureCanvasRef.current = document.createElement('canvas')
+  /** Scroll the note viewport to a logical (pre-zoom) Y coordinate. Used by PDF internal links. */
+  const handlePdfScrollTo = useCallback((yLogical) => {
+    const container = containerRef.current
+    if (container) {
+      container.scrollTo({ top: yLogical * noteZoom, behavior: 'smooth' })
     }
-    const ctx = measureCanvasRef.current.getContext('2d')
-    if (!ctx) return null
-    const cs = getComputedStyle(ta)
-    const size = cs.fontSize || `${KEYBOARD_FONT_SIZE_PX}px`
-    ctx.font = `${size} ${cs.fontFamily}`
-    return ctx
-  }, [])
+  }, [noteZoom])
+
+  /**
+   * Logical canvas width in CSS pixels (before zoom transform).
+   * The canvas fills the viewport at all zoom levels by scaling the logical
+   * coordinate space: zooming out reveals more canvas area, zooming in
+   * reveals less.  Works uniformly for blank, PDF, and EPUB notes.
+   */
+  const logicalCanvasW = layoutW > 0 ? layoutW / noteZoom : layoutW
+
+  /**
+   * Maximum right extent (in logical canvas pixels) of all persisted content,
+   * including the PDF/EPUB page width for notes with a background document.
+   * Used to determine when zooming in would push content off-screen and
+   * horizontal scrollbars are needed.
+   */
+  const maxContentRight = useMemo(() => {
+    if (!note) return 0
+    let max = 0
+
+    // PDF/EPUB background: page fills paperWidth * docScale logical pixels.
+    if (note.pdfBackgroundFileId) {
+      const docScale = (note.importDocFontSizePt ?? KEYBOARD_FONT_SIZE_PX) / KEYBOARD_FONT_SIZE_PX
+      // paperWidthForPdf = layoutW (set below); docScale adjusts for imported font size.
+      max = Math.max(max, layoutW * docScale)
+    }
+
+    for (const s of note.strokes) {
+      const r = (s.options?.size ?? 3) / 2
+      for (const p of s.points) {
+        if (p[0] + r > max) max = p[0] + r
+      }
+    }
+    for (const e of note.imageEmbeds ?? []) {
+      const bbox = axisAlignedBBoxForRotatedRect(e.x, e.y, e.width, e.height, e.rotation ?? 0)
+      if (bbox.maxX > max) max = bbox.maxX
+    }
+    for (const tb of note.textBoxes ?? []) {
+      const right = tb.x + tb.width
+      if (right > max) max = right
+    }
+    return max
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- recompute when content or layout changes
+  }, [note?.strokes, note?.imageEmbeds, note?.textBoxes, note?.pdfBackgroundFileId, note?.importDocFontSizePt, layoutW])
+
+  const pdfUrl = useQuery(
+    api.files.getDownloadUrl,
+    note?.pdfBackgroundFileId != null
+      ? { fileId: note.pdfBackgroundFileId }
+      : 'skip'
+  )
+
+  const bumpToolbarToThisPane = useCallback(() => {
+    if (splitViewNoteId != null && noteIdProp != null) {
+      setSplitToolbarNoteId(noteIdProp)
+    }
+  }, [splitViewNoteId, noteIdProp, setSplitToolbarNoteId])
+
+  const prevActiveNoteIdRef = useRef(null)
 
   useLayoutEffect(() => {
     if (!note) {
@@ -154,15 +266,7 @@ export default function Canvas() {
       if (prevId) {
         cancelStrokeEraserGesture(prevId)
         cancelStrokesEditGesture(prevId)
-        const modes = useNotesStore.getState().noteInputModes
-        if ((modes[prevId] ?? getDefaultNoteInputMode()) === 'keyboard') {
-          const prevNote = useNotesStore.getState().items[prevId]
-          const text =
-            prevNote?.type === 'note'
-              ? joinTextBlocks(prevNote.textBlocks)
-              : draftTextRef.current
-          setNoteKeyboardContent(prevId, text)
-        }
+        cancelImageEmbedEditGesture(prevId)
       }
       prevActiveNoteIdRef.current = null
       return
@@ -171,38 +275,32 @@ export default function Canvas() {
     if (prevId && prevId !== note.id) {
       cancelStrokeEraserGesture(prevId)
       cancelStrokesEditGesture(prevId)
-      const modes = useNotesStore.getState().noteInputModes
-      if ((modes[prevId] ?? getDefaultNoteInputMode()) === 'keyboard') {
-        const prevNote = useNotesStore.getState().items[prevId]
-        const text =
-          prevNote?.type === 'note'
-            ? joinTextBlocks(prevNote.textBlocks)
-            : draftTextRef.current
-        setNoteKeyboardContent(prevId, text)
-      }
+      cancelImageEmbedEditGesture(prevId)
     }
     prevActiveNoteIdRef.current = note.id
-  }, [
-    note?.id,
-    note,
-    setNoteKeyboardContent,
-    cancelStrokeEraserGesture,
-    cancelStrokesEditGesture,
-  ])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when note id changes, not on every note mutation
+  }, [note?.id, cancelStrokeEraserGesture, cancelStrokesEditGesture, cancelImageEmbedEditGesture])
 
   useLayoutEffect(() => {
     const id = note?.id
     return () => {
-      if (id) cancelStrokesEditGesture(id)
+      if (id) {
+        cancelStrokesEditGesture(id)
+        cancelImageEmbedEditGesture(id)
+      }
     }
-  }, [note?.id, cancelStrokesEditGesture])
+  }, [note?.id, cancelStrokesEditGesture, cancelImageEmbedEditGesture])
 
   useEffect(() => {
     if (!note?.id) {
       setSelectedStrokeIndices([])
+      setSelectedImageEmbedId(null)
+      setSelectedTextBoxIds([])
       setLassoDraftPoints(null)
       lassoDraftRef.current = null
       transformGestureRef.current = null
+      imageTransformRef.current = null
+      imageTapRef.current = null
       return
     }
     setSelectedStrokeIndices((prev) =>
@@ -213,12 +311,19 @@ export default function Canvas() {
   useEffect(() => {
     if (PEN_TYPES[activePen]?.isLasso) return
     const id = note?.id
-    if (id) cancelStrokesEditGesture(id)
+    if (id) {
+      cancelStrokesEditGesture(id)
+      cancelImageEmbedEditGesture(id)
+    }
     setSelectedStrokeIndices([])
+    setSelectedImageEmbedId(null)
+    setSelectedTextBoxIds([])
     setLassoDraftPoints(null)
     lassoDraftRef.current = null
     transformGestureRef.current = null
-  }, [activePen, note?.id, cancelStrokesEditGesture])
+    imageTransformRef.current = null
+    imageTapRef.current = null
+  }, [activePen, note?.id, cancelStrokesEditGesture, cancelImageEmbedEditGesture])
 
   useLayoutEffect(() => {
     const el = containerRef.current
@@ -228,68 +333,83 @@ export default function Canvas() {
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rebind ResizeObserver when switching notes only
   }, [note?.id])
+
+  const scrollSyncNoteId = note?.id
+  const syncScrollExtent = useCallback(() => {
+    const container = containerRef.current
+    if (!container || !scrollSyncNoteId) return
+    if (isPassive) return
+    const n = useNotesStore.getState().items[scrollSyncNoteId]
+    if (!n || n.type !== 'note') return
+    const zoom = n.zoom ?? 1
+    const scrollExtent = n.scrollHeight * zoom
+
+    // Compute the minimum logical height needed to contain all content.
+    let contentBottom = contentBottomForNote(n)
+    for (const tb of n.textBoxes ?? []) {
+      const h = textBoxHeightsRef.current[tb.id] ?? LINE_SPACING * 2
+      contentBottom = Math.max(contentBottom, tb.y + h)
+    }
+    let minH = Math.max(MIN_NOTE_SCROLL_HEIGHT, Math.ceil(contentBottom + BOTTOM_CONTENT_PAD))
+
+    const pdfBase = useNotesStore.getState().pdfBaseScrollHeights[scrollSyncNoteId]
+    if (pdfBase) minH = Math.max(minH, pdfBase)
+
+    // ── Extend: grow the canvas when the user approaches the bottom ──────
+    // Require (1) real overflow, (2) near the bottom in scroll px, (3) the
+    // canvas is not already taller than content — otherwise zoom-out (extent
+    // shrinks) or prior false extends leave huge blank space below the PDF.
+    if (
+      scrollExtent > container.clientHeight &&
+      container.scrollTop + container.clientHeight >= scrollExtent - 200 &&
+      n.scrollHeight <= minH + 200
+    ) {
+      extendScrollHeight(scrollSyncNoteId)
+      return
+    }
+
+    // ── Trim: drop off-screen blank space (logical bottom of viewport in note space)
+    const logicalBottom = Math.ceil(
+      (container.scrollTop + container.clientHeight) / zoom
+    )
+    const targetH = Math.max(minH, logicalBottom)
+
+    if (n.scrollHeight > targetH + 200) {
+      trimScrollHeight(scrollSyncNoteId, targetH)
+    }
+  }, [scrollSyncNoteId, extendScrollHeight, trimScrollHeight, isPassive])
 
   useEffect(() => {
     const container = containerRef.current
     if (!container || !note) return
-
-    const handleScroll = () => {
-      if (isKeyboard) return
-      const n = useNotesStore.getState().items[note.id]
-      const zoom = n?.type === 'note' ? (n.zoom ?? 1) : 1
-      const scrollExtent = note.scrollHeight * zoom
-      if (
-        container.scrollTop + container.clientHeight >=
-        scrollExtent - 200
-      ) {
-        extendScrollHeight(note.id)
-      }
-    }
-
-    container.addEventListener('scroll', handleScroll, { passive: true })
-    return () => container.removeEventListener('scroll', handleScroll)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable listener deps
-  }, [note?.id, note?.scrollHeight, extendScrollHeight, isKeyboard, noteZoom])
-
-  const flushKeyboardPersist = useCallback(() => {
-    if (!note) return
-    const text = textareaRef.current?.value ?? draftTextRef.current
-    draftTextRef.current = text
-    setNoteKeyboardContent(note.id, text)
-  }, [note, setNoteKeyboardContent])
-
-  useEffect(() => {
-    if (!note) {
-      wasKeyboardRef.current = false
-      return
-    }
-    const prev = wasKeyboardRef.current
-    wasKeyboardRef.current = isKeyboard
-    if (prev && !isKeyboard) {
-      const text = textareaRef.current?.value ?? draftTextRef.current
-      draftTextRef.current = text
-      setNoteKeyboardContent(note.id, text)
-    }
-  }, [isKeyboard, note?.id, note, setNoteKeyboardContent])
-
-  const adjustTextLayerHeight = useCallback(() => {
-    const ta = textareaRef.current
-    if (!ta || !note) return
-    ta.style.height = 'auto'
-    const contentH = ta.scrollHeight
-    const nextH = Math.max(note.scrollHeight, contentH)
-    ta.style.height = `${nextH}px`
-    if (contentH > note.scrollHeight) {
-      ensureNoteScrollHeight(note.id, Math.ceil(contentH + 240))
-    }
-  }, [note, ensureNoteScrollHeight])
+    container.addEventListener('scroll', syncScrollExtent, { passive: true })
+    return () => container.removeEventListener('scroll', syncScrollExtent)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- note.id controls when to rebind; fresh state read inside handler
+  }, [note?.id, syncScrollExtent])
 
   useLayoutEffect(() => {
-    if (!note) return
-    requestAnimationFrame(adjustTextLayerHeight)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- avoid layout thrash on every `note` replace
-  }, [note?.id, note?.scrollHeight, adjustTextLayerHeight, isKeyboard, noteZoom])
+    syncScrollExtent()
+  }, [note?.id, noteZoom, syncScrollExtent])
+
+  // Clear textbox editing state when switching away from text mode.
+  useEffect(() => {
+    if (!isKeyboard) {
+      setEditingTextBoxId(null)
+    }
+  }, [isKeyboard])
+
+  // Clear lasso/selection state when switching to select mode (no lasso available).
+  useEffect(() => {
+    if (isSelect) {
+      setSelectedStrokeIndices([])
+      setSelectedImageEmbedId(null)
+      setSelectedTextBoxIds([])
+      setLassoDraftPoints(null)
+      lassoDraftRef.current = null
+    }
+  }, [isSelect])
 
   const getPointerPos = useCallback(
     (e) => {
@@ -333,11 +453,34 @@ export default function Canvas() {
   )
 
   const showLassoChrome =
-    !isKeyboard && PEN_TYPES[activePen]?.isLasso && selectionBBox
+    !isPassive && PEN_TYPES[activePen]?.isLasso && selectionBBox
+
+  const selectedImageEmbed = useMemo(() => {
+    if (!note || !selectedImageEmbedId) return null
+    return (note.imageEmbeds ?? []).find((e) => e.id === selectedImageEmbedId) ?? null
+  }, [note, selectedImageEmbedId])
+
+  const selectedImageBBox = useMemo(() => {
+    if (!selectedImageEmbed) return null
+    return axisAlignedBBoxForRotatedRect(
+      selectedImageEmbed.x,
+      selectedImageEmbed.y,
+      selectedImageEmbed.width,
+      selectedImageEmbed.height,
+      selectedImageEmbed.rotation ?? 0
+    )
+  }, [selectedImageEmbed])
+
+  const showImageLassoChrome =
+    !isPassive &&
+    PEN_TYPES[activePen]?.isLasso &&
+    selectedImageBBox &&
+    selectedImageEmbedId
 
   const handlePointerDown = useCallback(
     (e) => {
-      if (!note || isKeyboard) return
+      if (!note || isPassive) return
+      bumpToolbarToThisPane()
       if (e.button !== 0) return
       // Pen/mouse always; touch only on phone-class viewports (see noteInputDefaults).
       if (e.pointerType === 'touch' && !phoneClassViewport) return
@@ -361,8 +504,10 @@ export default function Canvas() {
       if (pen.isLasso) {
         const px = point[0]
         const py = point[1]
-        const strokesNow =
-          useNotesStore.getState().items[note.id]?.strokes ?? []
+        const row = useNotesStore.getState().items[note.id]
+        const strokesNow = row?.strokes ?? []
+        const embeds = row?.imageEmbeds ?? []
+
         if (selectedStrokeIndices.length > 0) {
           const bbox = unionBBoxOfStrokes(
             strokesNow,
@@ -387,7 +532,67 @@ export default function Canvas() {
             return
           }
         }
+
+        if (selectedImageEmbedId) {
+          const emb = embeds.find((e) => e.id === selectedImageEmbedId)
+          if (emb) {
+            const ibox = axisAlignedBBoxForRotatedRect(
+              emb.x,
+              emb.y,
+              emb.width,
+              emb.height,
+              emb.rotation ?? 0
+            )
+            const ihit = hitTransformHandle(px, py, ibox)
+            if (ihit) {
+              beginImageEmbedEditGesture(note.id)
+              const cx = emb.x + emb.width / 2
+              const cy = emb.y + emb.height / 2
+              imageTransformRef.current = {
+                kind: ihit,
+                startX: px,
+                startY: py,
+                baseEmbed: { ...emb },
+                embedId: emb.id,
+                centerX: cx,
+                centerY: cy,
+                startDist: Math.max(Math.hypot(px - cx, py - cy), 1e-6),
+                angle0: Math.atan2(py - cy, px - cx),
+                baseRotation: emb.rotation ?? 0,
+              }
+              return
+            }
+          }
+        }
+
+        for (let i = embeds.length - 1; i >= 0; i--) {
+          const emb = embeds[i]
+          if (
+            pointInRotatedRect(
+              px,
+              py,
+              emb.x,
+              emb.y,
+              emb.width,
+              emb.height,
+              emb.rotation ?? 0
+            )
+          ) {
+            imageTapRef.current = {
+              embedId: emb.id,
+              startX: px,
+              startY: py,
+            }
+            const p2 = [px, py]
+            lassoDraftRef.current = [p2]
+            setLassoDraftPoints([p2])
+            return
+          }
+        }
+
         setSelectedStrokeIndices([])
+        setSelectedImageEmbedId(null)
+        imageTapRef.current = null
         const p2 = [px, py]
         lassoDraftRef.current = [p2]
         setLassoDraftPoints([p2])
@@ -425,7 +630,7 @@ export default function Canvas() {
     },
     [
       note,
-      isKeyboard,
+      isPassive,
       activePen,
       activeColor,
       penSize,
@@ -434,19 +639,69 @@ export default function Canvas() {
       beginStrokeEraserGesture,
       cancelStrokeEraserGesture,
       beginStrokesEditGesture,
+      beginImageEmbedEditGesture,
       selectedStrokeIndices,
+      selectedImageEmbedId,
       phoneClassViewport,
+      bumpToolbarToThisPane,
     ]
   )
 
   const handlePointerMove = useCallback(
     (e) => {
-      if (!isDrawingRef.current || !note || isKeyboard) return
+      if (!isDrawingRef.current || !note || isPassive) return
       if (e.pointerId !== drawingPointerIdRef.current) return
 
       e.preventDefault()
       const point = getPointerPos(e)
       const pen = PEN_TYPES[activePen]
+
+      if (imageTransformRef.current) {
+        const g = imageTransformRef.current
+        const x = point[0]
+        const y = point[1]
+        const row = useNotesStore.getState().items[note.id]
+        const list = [...(row?.imageEmbeds ?? [])]
+        const idx = list.findIndex((e) => e.id === g.embedId)
+        if (idx < 0) return
+        const base = g.baseEmbed
+        const cx = g.centerX
+        const cy = g.centerY
+        if (g.kind === 'move') {
+          const dx = x - g.startX
+          const dy = y - g.startY
+          list[idx] = {
+            ...base,
+            x: base.x + dx,
+            y: base.y + dy,
+          }
+          setNoteImageEmbedsLive(note.id, list)
+          return
+        }
+        if (g.kind === 'rotate') {
+          const ang = Math.atan2(y - cy, x - cx) - g.angle0
+          const deg = g.baseRotation + (ang * 180) / Math.PI
+          list[idx] = { ...base, rotation: deg }
+          setNoteImageEmbedsLive(note.id, list)
+          return
+        }
+        if (g.kind === 'scale') {
+          const d = Math.hypot(x - cx, y - cy)
+          const sc = d / g.startDist
+          const scale = Math.max(0.05, Math.min(sc, 40))
+          const nw = Math.max(8, base.width * scale)
+          const nh = Math.max(8, base.height * scale)
+          list[idx] = {
+            ...base,
+            x: cx - nw / 2,
+            y: cy - nh / 2,
+            width: nw,
+            height: nh,
+          }
+          setNoteImageEmbedsLive(note.id, list)
+          return
+        }
+      }
 
       if (transformGestureRef.current) {
         const g = transformGestureRef.current
@@ -516,11 +771,12 @@ export default function Canvas() {
     },
     [
       note,
-      isKeyboard,
+      isPassive,
       activePen,
       getPointerPos,
       eraseStrokesAt,
       setNoteStrokesLive,
+      setNoteImageEmbedsLive,
     ]
   )
 
@@ -536,6 +792,12 @@ export default function Canvas() {
     isDrawingRef.current = false
     drawingPointerIdRef.current = null
 
+    if (imageTransformRef.current && note) {
+      imageTransformRef.current = null
+      commitImageEmbedEditGesture(note.id)
+      return
+    }
+
     if (transformGestureRef.current && note) {
       transformGestureRef.current = null
       commitStrokesEditGesture(note.id)
@@ -543,17 +805,48 @@ export default function Canvas() {
     }
 
     if (note && PEN_TYPES[activePen]?.isLasso && lassoDraftRef.current) {
+      const tap = imageTapRef.current
       const pts = lassoDraftRef.current
       lassoDraftRef.current = null
       setLassoDraftPoints(null)
+      imageTapRef.current = null
+
+      if (tap && pts.length >= 1) {
+        let maxD = 0
+        for (const p of pts) {
+          maxD = Math.max(
+            maxD,
+            Math.hypot(p[0] - tap.startX, p[1] - tap.startY)
+          )
+        }
+        if (maxD < 12) {
+          setSelectedStrokeIndices([])
+          setSelectedImageEmbedId(tap.embedId)
+          return
+        }
+      }
+
       if (pts.length >= 3) {
-        const strokes =
-          useNotesStore.getState().items[note.id]?.strokes ?? []
+        const noteState = useNotesStore.getState().items[note.id]
+        const strokes = noteState?.strokes ?? []
         const idx = []
         for (let i = 0; i < strokes.length; i++) {
           if (strokeIntersectsLasso(strokes[i], pts)) idx.push(i)
         }
         setSelectedStrokeIndices(idx.sort((a, b) => a - b))
+        setSelectedImageEmbedId(null)
+
+        // Also select textboxes whose center falls inside the lasso polygon.
+        const tbs = noteState?.textBoxes ?? []
+        const tbIds = tbs
+          .filter((tb) => {
+            const h = textBoxHeightsRef.current[tb.id] ?? LINE_SPACING
+            const cx = tb.x + tb.width / 2
+            const cy = tb.y + h / 2
+            return pointInPolygon(cx, cy, pts)
+          })
+          .map((tb) => tb.id)
+        setSelectedTextBoxIds(tbIds)
       }
       return
     }
@@ -575,119 +868,156 @@ export default function Canvas() {
     addStroke,
     commitStrokeEraserGesture,
     commitStrokesEditGesture,
+    commitImageEmbedEditGesture,
   ])
 
-  const handleKeyboardChange = useCallback(
-    (e) => {
-      const text = e.target.value
-      draftTextRef.current = text
-      setNoteKeyboardContent(note.id, text)
-      requestAnimationFrame(adjustTextLayerHeight)
+  /**
+   * If the currently-editing textbox has no content, delete it.
+   * Called before switching to a different textbox or leaving edit mode.
+   */
+  const cleanUpEmptyEditingTextBox = useCallback(
+    (currentEditingId) => {
+      if (!currentEditingId || !note) return
+      const noteState = useNotesStore.getState().items[note.id]
+      const box = noteState?.textBoxes?.find((b) => b.id === currentEditingId)
+      if (box && !box.content.trim()) {
+        deleteTextBox(note.id, currentEditingId)
+        setEditingTextBoxId(null)
+        setSelectedTextBoxIds((prev) => prev.filter((sid) => sid !== currentEditingId))
+      }
     },
-    [note, setNoteKeyboardContent, adjustTextLayerHeight]
+    [note, deleteTextBox]
   )
 
-  const handleKeyboardBlur = useCallback(() => {
-    flushKeyboardPersist()
-  }, [flushKeyboardPersist])
-
-  const handleTextAreaPointerDown = useCallback(
-    (e) => {
-      if (!isKeyboard || e.button !== 0) return
-      const ta = textareaRef.current
-      if (!ta) return
-      const rect = ta.getBoundingClientRect()
-      const line = LINE_SPACING
-      const padL = KEYBOARD_HORIZONTAL_PADDING_PX
-      const rw = rect.width > 0 ? rect.width : 1
-      const rh = rect.height > 0 ? rect.height : 1
-      const layoutY =
-        ((e.clientY - rect.top) / rh) * ta.clientHeight
-      const ctx = getMeasureCtx(ta)
-      const textBottom = estimatedWrappedTextBottomLayoutPx(ta, 1, ctx)
-      if (layoutY < textBottom - 1) {
-        return
+  /** Wrapped setEditingTextBoxId that cleans up any previous empty textbox first. */
+  const handleStartEditTextBox = useCallback(
+    (id) => {
+      if (editingTextBoxId && editingTextBoxId !== id) {
+        cleanUpEmptyEditingTextBox(editingTextBoxId)
       }
-      if (!ctx) return
+      setEditingTextBoxId(id)
+    },
+    [editingTextBoxId, cleanUpEmptyEditingTextBox]
+  )
 
+  /**
+   * Handles a tap/click on empty canvas space while in text (keyboard) mode:
+   * creates a new textbox whose left edge is at the click position and whose
+   * right edge reaches the current viewport right boundary.
+   */
+  const handlePaperPointerDown = useCallback(
+    (e) => {
+      if (!isKeyboard || !note) return
+      if (e.button !== 0) return
+      // Prevent the browser from moving focus to document.body (mobile) or
+      // generating a click event that could steal focus away from the new textarea.
       e.preventDefault()
-      ta.focus()
-      const layoutX = ((e.clientX - rect.left) / rw) * ta.clientWidth
-      const layoutRect = {
-        left: 0,
-        top: 0,
-        width: ta.clientWidth,
-        height: ta.clientHeight,
-      }
-      const { nextValue, index } = valueAndCaretForCanvasClick(
-        ta.value,
-        layoutX,
-        layoutY,
-        layoutRect,
-        ctx,
-        {
-          lineSpacingPx: line,
-          padLeftPx: padL,
-          padTopPx: TEXT_PAD_TOP_PX,
-        }
-      )
-      if (nextValue !== ta.value) {
-        draftTextRef.current = nextValue
-        setNoteKeyboardContent(note.id, nextValue)
-      }
-      requestAnimationFrame(() => {
-        ta.setSelectionRange(index, index)
-        adjustTextLayerHeight()
-      })
+      bumpToolbarToThisPane()
+      cleanUpEmptyEditingTextBox(editingTextBoxId)
+      const [x, y] = getPointerPos(e)
+      const id = uuidv4()
+      // Extend to the current viewport's right edge in logical coordinates.
+      // Using (scrollLeft + clientWidth) / zoom works for all note types and
+      // all horizontal scroll positions.
+      const container = containerRef.current
+      const viewportRight = container && layoutW > 0
+        ? (container.scrollLeft + container.clientWidth) / noteZoom
+        : layoutW / noteZoom
+      const width = Math.max(60, viewportRight - x - 16)
+      createTextBox(note.id, { id, x, y, width, content: '' })
+      setEditingTextBoxId(id)
     },
-    [
-      isKeyboard,
-      getMeasureCtx,
-      adjustTextLayerHeight,
-      setNoteKeyboardContent,
-      note?.id,
-    ]
+    [isKeyboard, note, editingTextBoxId, getPointerPos, layoutW, noteZoom, createTextBox, bumpToolbarToThisPane, cleanUpEmptyEditingTextBox]
   )
+
+  const handleTextBoxEdit = useCallback(
+    (id, content) => {
+      if (!note) return
+      updateTextBox(note.id, id, { content })
+    },
+    [note, updateTextBox]
+  )
+
+  const handleDeleteTextBox = useCallback(
+    (id) => {
+      if (!note) return
+      deleteTextBox(note.id, id)
+      setEditingTextBoxId((prev) => (prev === id ? null : prev))
+      setSelectedTextBoxIds((prev) => prev.filter((sid) => sid !== id))
+    },
+    [note, deleteTextBox]
+  )
+
+  const handleTextBoxResize = useCallback(
+    (id, newWidth) => {
+      if (!note) return
+      updateTextBox(note.id, id, { width: newWidth })
+    },
+    [note, updateTextBox]
+  )
+
+  const handleTextBoxMove = useCallback(
+    (id, newX, newY) => {
+      if (!note) return
+      updateTextBox(note.id, id, { x: newX, y: newY })
+    },
+    [note, updateTextBox]
+  )
+
+  const handleTextBoxRotate = useCallback(
+    (id, rotation) => {
+      if (!note) return
+      updateTextBox(note.id, id, { rotation })
+    },
+    [note, updateTextBox]
+  )
+
+  const handleTextBoxHeightChange = useCallback((id, height) => {
+    textBoxHeightsRef.current = { ...textBoxHeightsRef.current, [id]: height }
+  }, [])
 
   const templateStyle = useMemo(() => {
     if (!note) return {}
+    if (note.pdfBackgroundFileId) return {}
     const styles = templateStylesForSpacing(LINE_SPACING)
     return styles[note.template] || {}
   }, [note])
 
-  /** Base typography; zoom is applied once via `transform: scale` on the inner wrapper. */
-  const keyboardTextStyle = useMemo(() => {
-    if (!note) return {}
-    return {
-      fontSize: KEYBOARD_FONT_SIZE_PX,
-      lineHeight: `${LINE_SPACING}px`,
-      paddingLeft: KEYBOARD_HORIZONTAL_PADDING_PX,
-      paddingRight: KEYBOARD_HORIZONTAL_PADDING_PX,
-      paddingTop: TEXT_PAD_TOP_PX,
-      paddingBottom: LINE_SPACING,
-      color: CANVAS_TYPING_INK,
-      caretColor: CANVAS_TYPING_INK,
-    }
-  }, [note])
+  /** PDF render target width — constant viewport width so re-rasterization stays at 1:1 pixel density regardless of zoom. */
+  const paperWidthForPdf = layoutW
 
   const spacerStyle = useMemo(() => {
     if (!note) return {}
+    // Always at least as wide as the viewport. When content extends beyond the
+    // logical canvas boundary (e.g. zoomed in past existing strokes) the spacer
+    // grows so the browser shows a horizontal scrollbar.
+    const minVisualW = layoutW > 0 ? layoutW : 100
+    const contentVisualW = maxContentRight * noteZoom
     return {
-      width: '100%',
+      width: layoutW > 0
+        ? `${Math.ceil(Math.max(minVisualW, contentVisualW))}px`
+        : `${Math.max(100, contentVisualW > 0 ? contentVisualW : 100)}%`,
       minHeight: note.scrollHeight * noteZoom,
       minWidth: 0,
       boxSizing: 'border-box',
     }
-  }, [note, noteZoom])
+  }, [note, noteZoom, layoutW, maxContentRight])
 
   /**
-   * Same formula for every zoom: layout width layoutW/z × scale(z) → visual paper width layoutW.
-   * Avoids a discontinuity at z=1 (no min(z,1) branch) so wrapping and ink behave uniformly.
+   * Inner note surface. For non-PDF notes the logical width is `layoutW / zoom`
+   * so the canvas always fills the viewport after the scale transform regardless
+   * of zoom level. Zooming out expands the drawable area; zooming in contracts it.
+   * If persisted content extends beyond the logical boundary the inner div grows
+   * to fit it (the spacer widens accordingly so the container scrolls).
+   * For PDF notes the width stays fixed at `layoutW` to keep the PDF background
+   * correctly sized against the parent scale transform.
    */
   const scaledInnerStyle = useMemo(() => {
     if (!note) return {}
     const z = noteZoom
-    const widthPx = layoutW > 0 ? `${layoutW / z}px` : `${100 / z}%`
+    // Grow to fit any content that would otherwise be off-screen.
+    const effectiveLogicalW = Math.max(logicalCanvasW, maxContentRight)
+    const widthPx = layoutW > 0 ? `${effectiveLogicalW}px` : '100%'
     return {
       width: widthPx,
       minHeight: note.scrollHeight,
@@ -697,7 +1027,7 @@ export default function Canvas() {
       transformOrigin: 'left top',
       ...templateStyle,
     }
-  }, [note, noteZoom, templateStyle, layoutW])
+  }, [note, noteZoom, templateStyle, layoutW, logicalCanvasW, maxContentRight])
 
   useEffect(() => {
     const el = containerRef.current
@@ -768,6 +1098,13 @@ export default function Canvas() {
   }, [note?.id])
 
   if (!note) {
+    if (noteIdProp != null) {
+      return (
+        <div className="flex flex-1 items-center justify-center bg-canvas-bg text-text-muted min-h-0 min-w-0 text-sm px-4 text-center">
+          This note is no longer available.
+        </div>
+      )
+    }
     return (
       <div className="flex-1 flex items-center justify-center bg-surface text-text-muted min-w-0">
         <div className="text-center space-y-3">
@@ -783,40 +1120,55 @@ export default function Canvas() {
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-hidden relative bg-canvas-bg min-w-0 touch-pan-x touch-pan-y"
+      className="flex-1 min-h-0 overflow-y-auto overflow-x-auto relative bg-canvas-bg min-w-0 touch-pan-x touch-pan-y"
     >
       <div className="relative min-w-0" style={spacerStyle}>
-        <div className="relative w-full min-w-0" style={scaledInnerStyle}>
-          <textarea
-            key={note.id}
-            ref={textareaRef}
-            readOnly={!isKeyboard}
-            value={joinTextBlocks(note.textBlocks)}
-            onChange={handleKeyboardChange}
-            onPointerDown={handleTextAreaPointerDown}
-            onBlur={handleKeyboardBlur}
-            spellCheck={isKeyboard}
-            tabIndex={isKeyboard ? 0 : -1}
-            className={`relative z-0 w-full min-w-0 max-w-full bg-transparent border-0 outline-none resize-none font-sans whitespace-pre-wrap break-words selection:bg-accent/25 placeholder:text-neutral-400 ${
-              isKeyboard ? '' : 'pointer-events-none'
-            }`}
-            style={{
-              ...keyboardTextStyle,
-              overflowWrap: 'break-word',
-              wordBreak: 'break-word',
-            }}
-            placeholder={isKeyboard ? 'Type here…' : ''}
+        {/* data-notezoom lets the resize handle drag compute note-space deltas */}
+        <div
+          className="relative w-full min-w-0"
+          style={scaledInnerStyle}
+          data-notezoom={noteZoom}
+          onPointerDown={isKeyboard ? handlePaperPointerDown : undefined}
+        >
+          <PdfNoteBackground
+            pdfUrl={pdfUrl ?? null}
+            paperWidth={paperWidthForPdf}
+            noteZoom={noteZoom}
+            importDocFontSizePt={note.importDocFontSizePt}
+            noteId={note.id}
+            textSelectable={isSelect}
+            onScrollTo={handlePdfScrollTo}
+          />
+          <ImageEmbedsLayer
+            embeds={note.imageEmbeds ?? []}
+            minHeight={note.scrollHeight}
+            isKeyboard={isKeyboard}
+          />
+          <TextBoxesLayer
+            textBoxes={note.textBoxes ?? []}
+            editingId={editingTextBoxId}
+            selectedIds={selectedTextBoxIds}
+            isTextMode={isKeyboard}
+            onStartEdit={handleStartEditTextBox}
+            onCommitEdit={handleTextBoxEdit}
+            onDelete={handleDeleteTextBox}
+            onResize={handleTextBoxResize}
+            onMove={handleTextBoxMove}
+            onRotate={handleTextBoxRotate}
+            onHeightChange={handleTextBoxHeightChange}
           />
           <svg
             ref={svgRef}
             width="100%"
             height="100%"
             className={`absolute top-0 left-0 w-full ${
-              isKeyboard ? 'z-10 pointer-events-none' : 'cursor-crosshair z-10'
+              isPassive
+                ? `z-[5] pointer-events-none${isSelect ? ' cursor-default' : ''}`
+                : 'cursor-crosshair z-[5]'
             }`}
             style={{
               minHeight: note.scrollHeight,
-              touchAction: isKeyboard ? 'auto' : 'none',
+              touchAction: isPassive ? 'auto' : 'none',
             }}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
@@ -870,6 +1222,67 @@ export default function Canvas() {
                 {(() => {
                   const { minX: mx, minY: my, maxX: Mx, maxY: My } =
                     selectionBBox
+                  const cx = (mx + Mx) / 2
+                  const ro = LASSO_ROTATE_OFFSET
+                  const hr = LASSO_HANDLE_RADIUS
+                  const accent = 'rgb(99 102 241)'
+                  const hy = my - ro
+                  return (
+                    <>
+                      <rect
+                        x={mx}
+                        y={my}
+                        width={Mx - mx}
+                        height={My - my}
+                        fill="none"
+                        stroke={accent}
+                        strokeWidth={1}
+                        strokeDasharray="5 4"
+                        rx={2}
+                      />
+                      <line
+                        x1={cx}
+                        y1={my}
+                        x2={cx}
+                        y2={hy + hr}
+                        stroke={accent}
+                        strokeWidth={1}
+                        strokeDasharray="3 3"
+                      />
+                      <circle
+                        cx={cx}
+                        cy={hy}
+                        r={hr + 2}
+                        fill="white"
+                        stroke={accent}
+                        strokeWidth={1.5}
+                      />
+                      {[
+                        [mx, my],
+                        [Mx, my],
+                        [Mx, My],
+                        [mx, My],
+                      ].map(([x, y], hi) => (
+                        <circle
+                          key={hi}
+                          cx={x}
+                          cy={y}
+                          r={hr}
+                          fill="white"
+                          stroke={accent}
+                          strokeWidth={1.5}
+                        />
+                      ))}
+                    </>
+                  )
+                })()}
+              </g>
+            )}
+            {showImageLassoChrome && selectedImageBBox && (
+              <g pointerEvents="none">
+                {(() => {
+                  const { minX: mx, minY: my, maxX: Mx, maxY: My } =
+                    selectedImageBBox
                   const cx = (mx + Mx) / 2
                   const ro = LASSO_ROTATE_OFFSET
                   const hr = LASSO_HANDLE_RADIUS

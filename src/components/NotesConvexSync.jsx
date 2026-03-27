@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from 'convex/react'
 import { useEffect, useRef } from 'react'
 import { api } from '../../convex/_generated/api.js'
+import { KEYBOARD_FONT_SIZE_PX } from '../lib/canvasConstants.js'
 import {
   MIN_NOTE_SCROLL_HEIGHT,
   persistedScrollHeightForNote,
@@ -27,9 +28,21 @@ function buildUpdateNotePayload(note) {
       id: b.id,
       content: b.content,
     })),
+    textBoxes: (note.textBoxes ?? []).map((b) => ({
+      id: b.id,
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      content: b.content,
+    })),
+    imageEmbeds: note.imageEmbeds ?? [],
+    pdfBackgroundFileId: note.pdfBackgroundFileId ?? null,
     scrollHeight: persistedScrollHeightForNote(note),
     zoom: clampZoomForServer(note.zoom ?? 1),
     updatedAt: note.updatedAt,
+    importDocFontSizePt: note.importDocFontSizePt ?? KEYBOARD_FONT_SIZE_PX,
+    importEpubMarginPt: note.importEpubMarginPt ?? null,
+    importEpubMargins: note.importEpubMargins ?? null,
   }
 }
 const noteSaveTimers = new Map()
@@ -55,6 +68,23 @@ function rowsToStoreState(rows) {
         template: row.template ?? 'blank',
         strokes: row.strokes ?? [],
         textBlocks: row.textBlocks ?? [],
+        textBoxes: row.textBoxes ?? [],
+        imageEmbeds: row.imageEmbeds ?? [],
+        pdfBackgroundFileId: row.pdfBackgroundFileId,
+        importDocFontSizePt: row.importDocFontSizePt,
+        importEpubMargins:
+          row.importEpubMargins ??
+          (row.importEpubMarginPt != null
+            ? {
+                top: row.importEpubMarginPt,
+                right: row.importEpubMarginPt,
+                bottom: row.importEpubMarginPt,
+                left: row.importEpubMarginPt,
+              }
+            : undefined),
+        importEpubMarginPt: row.importEpubMargins
+          ? undefined
+          : row.importEpubMarginPt,
         scrollHeight: row.scrollHeight ?? MIN_NOTE_SCROLL_HEIGHT,
         zoom: row.zoom ?? 1,
         createdAt: row.createdAt,

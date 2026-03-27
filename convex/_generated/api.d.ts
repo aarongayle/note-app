@@ -14,6 +14,7 @@ import type * as auth from "../auth.js";
 import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as lib_access from "../lib/access.js";
+import type * as noteValidators from "../noteValidators.js";
 import type * as notes from "../notes.js";
 
 import type {
@@ -29,6 +30,7 @@ declare const fullApi: ApiFromModules<{
   files: typeof files;
   http: typeof http;
   "lib/access": typeof lib_access;
+  noteValidators: typeof noteValidators;
   notes: typeof notes;
 }>;
 

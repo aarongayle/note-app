@@ -17,6 +17,7 @@ import FileStoragePanel from './FileStoragePanel'
 function TreeItem({ id, depth = 0 }) {
   const item = useNotesStore((s) => s.items[id])
   const activeNoteId = useNotesStore((s) => s.activeNoteId)
+  const splitViewNoteId = useNotesStore((s) => s.splitViewNoteId)
   const isTreeReady = useNotesStore((s) => s.isTreeReady)
   const setActiveNote = useNotesStore((s) => s.setActiveNote)
   const deleteItem = useNotesStore((s) => s.deleteItem)
@@ -26,7 +27,9 @@ function TreeItem({ id, depth = 0 }) {
   if (!item) return null
 
   const isFolder = item.type === 'folder'
-  const isActive = item.id === activeNoteId
+  const isActive =
+    item.id === activeNoteId ||
+    (item.type === 'note' && item.id === splitViewNoteId)
 
   return (
     <div>

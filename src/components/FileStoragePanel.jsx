@@ -1,91 +1,161 @@
-import { useMutation, useQuery } from 'convex/react'
-import { Trash2, Upload } from 'lucide-react'
+import { useMutation } from 'convex/react'
+import { useState } from 'react'
+import { Upload } from 'lucide-react'
 import { api } from '../../convex/_generated/api.js'
+import useNotesStore from '../stores/useNotesStore'
+import {
+  layoutImageSize,
+  measureImageBitmap,
+  singleImageEmbed,
+  stripExtension,
+} from '../lib/fileToNote.js'
+import { KEYBOARD_FONT_SIZE_PX } from '../lib/canvasConstants.js'
+import { convertEpubToPdfInBrowser } from '../lib/epubToPdfBrowser.js'
+import { convertEpubViaStreamingService } from '../lib/epubToPdfService.js'
+import ImportNoteDialog from './ImportNoteDialog.jsx'
+
+const EPUB_SERVICE_URL = import.meta.env.VITE_EPUB_PDF_SERVICE_URL
+
+function detectImportKind(file) {
+  const lower = file.name.toLowerCase()
+  if (file.type.startsWith('image/')) return 'image'
+  if (file.type === 'application/pdf' || lower.endsWith('.pdf')) return 'pdf'
+  if (
+    lower.endsWith('.epub') ||
+    file.type.includes('epub') ||
+    file.type === 'application/epub+zip'
+  ) {
+    return 'epub'
+  }
+  return null
+}
 
 export default function FileStoragePanel() {
-  const files = useQuery(api.files.listMyFiles)
   const generateUploadUrl = useMutation(api.files.generateUploadUrl)
   const saveUploadedFile = useMutation(api.files.saveUploadedFile)
-  const removeFile = useMutation(api.files.removeFile)
+  const createNote = useNotesStore((s) => s.createNote)
 
-  async function onUpload(e) {
+  const [importSession, setImportSession] = useState(null)
+  const [progressMsg, setProgressMsg] = useState('')
+
+  function onPickFile(e) {
     const input = e.target
     const file = input.files?.[0]
     input.value = ''
     if (!file) return
+    const kind = detectImportKind(file)
+    if (!kind) {
+      window.alert('Unsupported file type. Use an image, PDF, or EPUB.')
+      return
+    }
+    setImportSession({
+      file,
+      kind,
+      defaultName: stripExtension(file.name),
+    })
+  }
+
+  async function uploadBlob(blob, name, contentType) {
     const postUrl = await generateUploadUrl()
     const res = await fetch(postUrl, {
       method: 'POST',
-      headers: file.type ? { 'Content-Type': file.type } : {},
-      body: file,
+      headers: contentType ? { 'Content-Type': contentType } : {},
+      body: blob,
     })
-    if (!res.ok) {
-      throw new Error(`Upload failed: ${res.status}`)
-    }
+    if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
     const { storageId } = await res.json()
-    await saveUploadedFile({
-      storageId,
-      name: file.name,
-      contentType: file.type || undefined,
-    })
+    return await saveUploadedFile({ storageId, name, contentType: contentType || undefined })
+  }
+
+  async function runImport({
+    noteName,
+    parentId,
+    documentFontSizePt,
+    epubMarginsPt,
+  }) {
+    if (!importSession) return
+    const { file, kind } = importSession
+
+    if (kind === 'epub') {
+      const converterOpts = {
+        fontSizePt: documentFontSizePt,
+        marginsPt: epubMarginsPt,
+        onProgress: setProgressMsg,
+      }
+      const pdfBlob = EPUB_SERVICE_URL
+        ? await convertEpubViaStreamingService(EPUB_SERVICE_URL, file, converterOpts)
+        : await convertEpubToPdfInBrowser(file, converterOpts)
+      setProgressMsg('Uploading…')
+      const pdfFileId = await uploadBlob(
+        pdfBlob,
+        file.name.replace(/\.epub$/i, '.pdf'),
+        'application/pdf',
+      )
+      createNote(noteName, 'blank', parentId, {
+        pdfBackgroundFileId: pdfFileId,
+        importDocFontSizePt: documentFontSizePt,
+        importEpubMargins: epubMarginsPt,
+      })
+      return
+    }
+
+    const fileId = await uploadBlob(file, file.name, file.type || undefined)
+
+    const scale = documentFontSizePt / KEYBOARD_FONT_SIZE_PX
+    const maxImageW = Math.round(680 * scale)
+
+    if (kind === 'image') {
+      const { w, h } = await measureImageBitmap(file)
+      const { width, height } = layoutImageSize(w, h, maxImageW)
+      createNote(noteName, 'blank', parentId, {
+        imageEmbeds: singleImageEmbed(fileId, { width, height }),
+        importDocFontSizePt: documentFontSizePt,
+      })
+      return
+    }
+
+    if (kind === 'pdf') {
+      createNote(noteName, 'blank', parentId, {
+        pdfBackgroundFileId: fileId,
+        importDocFontSizePt: documentFontSizePt,
+      })
+    }
   }
 
   return (
     <div className="border-t border-border px-3 py-3 space-y-2">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">
-          Convex files
+          Import file
         </span>
         <label className="inline-flex items-center gap-1 text-[11px] text-accent cursor-pointer hover:text-accent-hover">
           <Upload size={12} />
-          Upload
-          <input type="file" className="sr-only" onChange={(e) => void onUpload(e)} />
+          Choose file
+          <input
+            type="file"
+            className="sr-only"
+            accept="image/*,.pdf,.epub,application/pdf,application/epub+zip"
+            onChange={onPickFile}
+          />
         </label>
       </div>
-      {files === undefined ? (
-        <p className="text-[11px] text-text-muted">Loading…</p>
-      ) : files.length === 0 ? (
-        <p className="text-[11px] text-text-muted">No files yet.</p>
-      ) : (
-        <ul className="space-y-1 max-h-32 overflow-y-auto">
-          {files.map((f) => (
-            <FileRow
-              key={f._id}
-              file={f}
-              removeFile={removeFile}
-            />
-          ))}
-        </ul>
+      <p className="text-[10px] text-text-muted leading-snug">
+        Images, PDFs, and EPUBs become notes.
+      </p>
+
+      {importSession && (
+        <ImportNoteDialog
+          file={importSession.file}
+          kind={importSession.kind}
+          defaultName={importSession.defaultName}
+          progressMsg={progressMsg}
+          onClose={() => {
+            setImportSession(null)
+            setProgressMsg('')
+          }}
+          onConfirm={runImport}
+        />
       )}
     </div>
-  )
-}
-
-function FileRow({ file, removeFile }) {
-  const url = useQuery(api.files.getDownloadUrl, { fileId: file._id })
-
-  return (
-    <li className="flex items-center gap-1.5 text-[11px] text-text-secondary group">
-      {url ? (
-        <a
-          href={url}
-          target="_blank"
-          rel="noreferrer"
-          className="truncate flex-1 hover:text-accent transition-colors"
-        >
-          {file.name}
-        </a>
-      ) : (
-        <span className="truncate flex-1">{file.name}</span>
-      )}
-      <button
-        type="button"
-        onClick={() => void removeFile({ fileId: file._id })}
-        className="p-0.5 rounded text-text-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-        aria-label={`Delete ${file.name}`}
-      >
-        <Trash2 size={12} />
-      </button>
-    </li>
   )
 }
