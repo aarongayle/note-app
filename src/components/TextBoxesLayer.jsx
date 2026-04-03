@@ -186,6 +186,7 @@ const TextBox = memo(function TextBox({
   return (
     <div
       data-text-box-wrapper
+      data-text-box-id={textBox.id}
       onPointerDown={handleWrapperPointerDown}
       style={{
         position: 'absolute',

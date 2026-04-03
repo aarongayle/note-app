@@ -11,11 +11,16 @@
 import type * as allowlist from "../allowlist.js";
 import type * as allowlistAdmin from "../allowlistAdmin.js";
 import type * as auth from "../auth.js";
+import type * as crons from "../crons.js";
+import type * as debug from "../debug.js";
 import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as lib_access from "../lib/access.js";
 import type * as noteValidators from "../noteValidators.js";
 import type * as notes from "../notes.js";
+import type * as search from "../search.js";
+import type * as transcribe from "../transcribe.js";
+import type * as transcriptionTasks from "../transcriptionTasks.js";
 
 import type {
   ApiFromModules,
@@ -27,11 +32,16 @@ declare const fullApi: ApiFromModules<{
   allowlist: typeof allowlist;
   allowlistAdmin: typeof allowlistAdmin;
   auth: typeof auth;
+  crons: typeof crons;
+  debug: typeof debug;
   files: typeof files;
   http: typeof http;
   "lib/access": typeof lib_access;
   noteValidators: typeof noteValidators;
   notes: typeof notes;
+  search: typeof search;
+  transcribe: typeof transcribe;
+  transcriptionTasks: typeof transcriptionTasks;
 }>;
 
 /**

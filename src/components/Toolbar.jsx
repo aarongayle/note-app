@@ -21,10 +21,12 @@ import {
   Italic,
   Underline,
   Strikethrough,
+  Search,
 } from "lucide-react";
 import { api } from "../../convex/_generated/api.js";
 import { NOTE_ZOOM_BUTTON_STEP } from "../lib/canvasConstants.js";
 import { uploadBlobToFiles } from "../lib/convexFileUpload.js";
+import SearchPopup from "./SearchPopup.jsx";
 import {
   createImageEmbed,
   layoutImageSize,
@@ -36,7 +38,8 @@ import useNotesStore, {
   PEN_COLORS,
   NOTE_ZOOM_MIN,
   NOTE_ZOOM_MAX,
-} from "../stores/useNotesStore";
+} from "../stores/useNotesStore.js";
+import { KEYBOARD_FONT_SIZE_PX } from "../lib/canvasConstants.js";
 import { useDefaultNoteInputMode } from "../lib/noteInputDefaults.js";
 import { scrollPositionCache } from "../lib/scrollPositionCache.js";
 import PickSecondNoteDialog from "./PickSecondNoteDialog";
@@ -47,7 +50,10 @@ const rgbToHex = (rgb) => {
   if (!match || match.length < 3) return rgb;
   return (
     "#" +
-    match.slice(0, 3).map((n) => parseInt(n).toString(16).padStart(2, "0")).join("")
+    match
+      .slice(0, 3)
+      .map((n) => parseInt(n).toString(16).padStart(2, "0"))
+      .join("")
   );
 };
 
@@ -66,6 +72,7 @@ const PEN_ICONS = {
  */
 export default function Toolbar({ noteId: noteIdProp } = {}) {
   const [splitPickerOpen, setSplitPickerOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [cameraBusy, setCameraBusy] = useState(false);
   const cameraInputRef = useRef(null);
   const generateUploadUrl = useMutation(api.files.generateUploadUrl);
@@ -77,10 +84,17 @@ export default function Toolbar({ noteId: noteIdProp } = {}) {
   const splitViewNoteId = useNotesStore((s) => s.splitViewNoteId);
 
   const targetNoteId = useNotesStore((s) => {
-    if (noteIdProp) return noteIdProp;
-    return s.splitViewNoteId != null
-      ? (s.splitToolbarNoteId ?? s.activeNoteId)
-      : s.activeNoteId;
+    let id = noteIdProp;
+    if (!id) {
+      id =
+        s.splitViewNoteId != null
+          ? (s.splitToolbarNoteId ?? s.activeNoteId)
+          : s.activeNoteId;
+    }
+
+    // Ensure we only return valid note IDs, not folder IDs
+    if (!id || typeof id !== "string" || id.length < 10) return null;
+    return s.items[id]?.type === 'note' ? id : null;
   });
 
   const inputMode = useNotesStore((s) => {
@@ -256,7 +270,7 @@ export default function Toolbar({ noteId: noteIdProp } = {}) {
   );
 
   const toggleFormat = useCallback(
-    (cmd, currentState) => {
+    (cmd) => {
       // execCommand toggles, but we can force it by checking state first
       document.execCommand(cmd, false, null);
       refreshSelState();
@@ -277,235 +291,349 @@ export default function Toolbar({ noteId: noteIdProp } = {}) {
     "flex shrink-0 items-center gap-0.5 border-r border-border pr-2 sm:pr-3";
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-1.5 py-1.5 pl-2 pr-2 sm:h-12 sm:flex-row sm:items-center sm:gap-3 sm:py-0 sm:pl-3 sm:pr-3">
-      {/* Row 1 (mobile): mode, undo/redo, zoom — on sm+ merges into one row with row 2 */}
-      <div
-        className={`flex min-w-0 flex-wrap items-center gap-2 sm:contents ${
-          isStylus ? "border-b border-border pb-1.5 sm:border-0 sm:pb-0" : ""
-        }`}
-      >
-        {showSplitButton && (
-          <div className={groupClass}>
-            <button
-              type="button"
-              onClick={() => setSplitPickerOpen(true)}
-              title="View two notes — side by side in landscape, stacked in portrait"
-              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
-            >
-              <Columns2 size={18} />
-            </button>
-          </div>
-        )}
-
-        {targetNoteId && (
-          <div className={groupClass}>
-            <button
-              type="button"
-              onPointerDown={handleBookmarkPointerDown}
-              onPointerUp={handleBookmarkPointerUp}
-              onPointerLeave={() => clearTimeout(longPressTimer.current)}
-              title={
-                bookmarkY != null
-                  ? "Click to jump to bookmark · Long-press to clear"
-                  : "Bookmark current scroll position"
-              }
-              className={`p-2 rounded-lg transition-colors ${
-                bookmarkY != null
-                  ? "text-accent"
-                  : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
-              }`}
-            >
-              <Bookmark
-                size={18}
-                fill={bookmarkY != null ? "currentColor" : "none"}
-              />
-            </button>
-          </div>
-        )}
-
-        {targetNoteId && (
-          <div className={groupClass}>
-            <input
-              ref={cameraInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="sr-only"
-              tabIndex={-1}
-              aria-hidden
-              onChange={handleCameraInputChange}
-            />
-            <button
-              type="button"
-              disabled={cameraBusy}
-              onClick={() => cameraInputRef.current?.click()}
-              title="Take or choose a photo to embed in this note"
-              aria-label="Take or choose a photo to embed in this note"
-              aria-busy={cameraBusy}
-              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
-            >
-              <Camera size={18} />
-            </button>
-          </div>
-        )}
-
-        {targetNoteId && (
-          <div className={groupClass}>
-            <button
-              type="button"
-              onClick={() => setMode("stylus")}
-              title="Stylus — draw with pen"
-              className={`p-2 rounded-lg transition-colors ${
-                isStylus
-                  ? "bg-accent/20 text-accent"
-                  : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
-              }`}
-            >
-              <PenLine size={18} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("keyboard")}
-              title="Keyboard — type text"
-              className={`p-2 rounded-lg transition-colors ${
-                isKeyboard
-                  ? "bg-accent/20 text-accent"
-                  : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
-              }`}
-            >
-              <Type size={18} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("select")}
-              title="Select — read PDF/EPUB text; move, rotate, and scale images and text boxes; click a text box to type without changing tools"
-              className={`p-2 rounded-lg transition-colors ${
-                isSelect
-                  ? "bg-accent/20 text-accent"
-                  : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
-              }`}
-            >
-              <MousePointer2 size={18} />
-            </button>
-          </div>
-        )}
-
-        {targetNoteId && isStylus && (
-          <div className={groupClass}>
-            <button
-              type="button"
-              onClick={() => undoStylus(targetNoteId)}
-              disabled={!canUndoStylus}
-              title="Undo stroke"
-              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
-            >
-              <Undo2 size={18} />
-            </button>
-            <button
-              type="button"
-              onClick={() => redoStylus(targetNoteId)}
-              disabled={!canRedoStylus}
-              title="Redo stroke"
-              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
-            >
-              <Redo2 size={18} />
-            </button>
-          </div>
-        )}
-
-        {targetNoteId && (
-          <div className={groupClass}>
-            <button
-              type="button"
-              onClick={() =>
-                zoomNoteBy(targetNoteId, 1 / NOTE_ZOOM_BUTTON_STEP)
-              }
-              disabled={noteZoom <= NOTE_ZOOM_MIN + 1e-6}
-              title="Zoom out"
-              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
-            >
-              <ZoomOut size={18} />
-            </button>
-            <button
-              type="button"
-              onClick={() => zoomNoteBy(targetNoteId, NOTE_ZOOM_BUTTON_STEP)}
-              disabled={noteZoom >= NOTE_ZOOM_MAX - 1e-6}
-              title="Zoom in"
-              className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
-            >
-              <ZoomIn size={18} />
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Row 2 (mobile): drawing tools — shown only in stylus mode */}
-      {isStylus && (
-        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
-          <div className="flex shrink-0 items-center gap-1 border-r border-border pr-2 sm:pr-3">
-            {Object.values(PEN_TYPES).map((pen) => {
-              const Icon = PEN_ICONS[pen.id];
-              return (
-                <button
-                  key={pen.id}
-                  type="button"
-                  onClick={() => {
-                    setActivePen(pen.id);
-                    if (!pen.isEraser && !pen.isLasso && pen.size)
-                      setPenSize(pen.size);
-                  }}
-                  title={pen.name}
-                  className={`p-2 rounded-lg transition-colors ${
-                    activePen === pen.id
-                      ? "bg-accent/20 text-accent"
-                      : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
-                  }`}
-                >
-                  <Icon size={18} />
-                </button>
-              );
-            })}
-          </div>
-
-          {!currentPen?.isEraser && !currentPen?.isLasso && (
-            <div className="flex shrink-0 items-center gap-1.5 border-r border-border pr-2 sm:pr-3">
+    <>
+      {searchOpen && targetNoteId && (
+        <SearchPopup
+          noteId={targetNoteId}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5 py-1.5 pl-2 pr-2 sm:h-12 sm:flex-row sm:items-center sm:gap-3 sm:py-0 sm:pl-3 sm:pr-3">
+        {/* Row 1 (mobile): mode, undo/redo, zoom — on sm+ merges into one row with row 2 */}
+        <div
+          className={`flex min-w-0 flex-wrap items-center gap-2 sm:contents ${
+            isStylus ? "border-b border-border pb-1.5 sm:border-0 sm:pb-0" : ""
+          }`}
+        >
+          {showSplitButton && (
+            <div className={groupClass}>
               <button
-                onClick={() => setPenSize(Math.max(1, penSize - 1))}
-                className="p-1 rounded text-text-muted hover:text-text-primary"
+                type="button"
+                onClick={() => setSplitPickerOpen(true)}
+                title="View two notes — side by side in landscape, stacked in portrait"
+                className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
               >
-                <Minus size={14} />
-              </button>
-              <div
-                className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-lighter"
-                title={`Size: ${penSize}`}
-              >
-                <div
-                  className="rounded-full bg-current"
-                  style={{
-                    width: Math.min(penSize * 2, 20),
-                    height: Math.min(penSize * 2, 20),
-                    color: strokeColor,
-                  }}
-                />
-              </div>
-              <button
-                onClick={() => setPenSize(Math.min(50, penSize + 1))}
-                className="p-1 rounded text-text-muted hover:text-text-primary"
-              >
-                <Plus size={14} />
+                <Columns2 size={18} />
               </button>
             </div>
           )}
 
-          {!currentPen?.isEraser && !currentPen?.isLasso && (
+          {targetNoteId && (
+            <div className={groupClass}>
+              <button
+                type="button"
+                onClick={() => setSearchOpen((prev) => !prev)}
+                title="Search Document"
+                className={`p-2 rounded-lg transition-colors ${
+                  searchOpen
+                    ? "bg-accent text-white"
+                    : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
+                }`}
+              >
+                <Search size={18} />
+              </button>
+              <button
+                type="button"
+                onPointerDown={handleBookmarkPointerDown}
+                onPointerUp={handleBookmarkPointerUp}
+                onPointerLeave={() => clearTimeout(longPressTimer.current)}
+                title={
+                  bookmarkY != null
+                    ? "Click to jump to bookmark · Long-press to clear"
+                    : "Bookmark current scroll position"
+                }
+                className={`p-2 rounded-lg transition-colors ${
+                  bookmarkY != null
+                    ? "text-accent"
+                    : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
+                }`}
+              >
+                <Bookmark
+                  size={18}
+                  fill={bookmarkY != null ? "currentColor" : "none"}
+                />
+              </button>
+            </div>
+          )}
+
+          {targetNoteId && (
+            <div className={groupClass}>
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="sr-only"
+                tabIndex={-1}
+                aria-hidden
+                onChange={handleCameraInputChange}
+              />
+              <button
+                type="button"
+                disabled={cameraBusy}
+                onClick={() => cameraInputRef.current?.click()}
+                title="Take or choose a photo to embed in this note"
+                aria-label="Take or choose a photo to embed in this note"
+                aria-busy={cameraBusy}
+                className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
+              >
+                <Camera size={18} />
+              </button>
+            </div>
+          )}
+
+          {targetNoteId && (
+            <div className={groupClass}>
+              <button
+                type="button"
+                onClick={() => setMode("stylus")}
+                title="Stylus — draw with pen"
+                className={`p-2 rounded-lg transition-colors ${
+                  isStylus
+                    ? "bg-accent/20 text-accent"
+                    : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
+                }`}
+              >
+                <PenLine size={18} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("keyboard")}
+                title="Keyboard — type text"
+                className={`p-2 rounded-lg transition-colors ${
+                  isKeyboard
+                    ? "bg-accent/20 text-accent"
+                    : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
+                }`}
+              >
+                <Type size={18} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("select")}
+                title="Select — read PDF/EPUB text; move, rotate, and scale images and text boxes; click a text box to type without changing tools"
+                className={`p-2 rounded-lg transition-colors ${
+                  isSelect
+                    ? "bg-accent/20 text-accent"
+                    : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
+                }`}
+              >
+                <MousePointer2 size={18} />
+              </button>
+            </div>
+          )}
+
+          {targetNoteId && isStylus && (
+            <div className={groupClass}>
+              <button
+                type="button"
+                onClick={() => undoStylus(targetNoteId)}
+                disabled={!canUndoStylus}
+                title="Undo stroke"
+                className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
+              >
+                <Undo2 size={18} />
+              </button>
+              <button
+                type="button"
+                onClick={() => redoStylus(targetNoteId)}
+                disabled={!canRedoStylus}
+                title="Redo stroke"
+                className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
+              >
+                <Redo2 size={18} />
+              </button>
+            </div>
+          )}
+
+          {targetNoteId && (
+            <div className={groupClass}>
+              <button
+                type="button"
+                onClick={() =>
+                  zoomNoteBy(targetNoteId, 1 / NOTE_ZOOM_BUTTON_STEP)
+                }
+                disabled={noteZoom <= NOTE_ZOOM_MIN + 1e-6}
+                title="Zoom out"
+                className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
+              >
+                <ZoomOut size={18} />
+              </button>
+              <button
+                type="button"
+                onClick={() => zoomNoteBy(targetNoteId, NOTE_ZOOM_BUTTON_STEP)}
+                disabled={noteZoom >= NOTE_ZOOM_MAX - 1e-6}
+                title="Zoom in"
+                className="p-2 rounded-lg transition-colors text-text-secondary hover:bg-surface-lighter hover:text-text-primary disabled:opacity-40 disabled:pointer-events-none"
+              >
+                <ZoomIn size={18} />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Row 2 (mobile): drawing tools — shown only in stylus mode */}
+        {isStylus && (
+          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+            <div className="flex shrink-0 items-center gap-1 border-r border-border pr-2 sm:pr-3">
+              {Object.values(PEN_TYPES).map((pen) => {
+                return (
+                  <button
+                    key={pen.id}
+                    type="button"
+                    onClick={() => {
+                      setActivePen(pen.id);
+                      if (!pen.isEraser && !pen.isLasso && pen.size)
+                        setPenSize(pen.size);
+                    }}
+                    title={pen.name}
+                    className={`p-2 rounded-lg transition-colors ${
+                      activePen === pen.id
+                        ? "bg-accent/20 text-accent"
+                        : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
+                    }`}
+                  >
+                    {pen.id === "pen" && <Pen size={18} />}
+                    {pen.id === "penLine" && <PenLine size={18} />}
+                    {pen.id === "highlighter" && <Highlighter size={18} />}
+                    {pen.id === "eraser" && <Eraser size={18} />}
+                    {pen.id === "lasso" && <LassoSelect size={18} />}
+                  </button>
+                );
+              })}
+            </div>
+
+            {!currentPen?.isEraser && !currentPen?.isLasso && (
+              <div className="flex shrink-0 items-center gap-1.5 border-r border-border pr-2 sm:pr-3">
+                <button
+                  onClick={() => setPenSize(Math.max(1, penSize - 1))}
+                  className="p-1 rounded text-text-muted hover:text-text-primary"
+                >
+                  <Minus size={14} />
+                </button>
+                <div
+                  className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-lighter"
+                  title={`Size: ${penSize}`}
+                >
+                  <div
+                    className="rounded-full bg-current"
+                    style={{
+                      width: Math.min(penSize * 2, 20),
+                      height: Math.min(penSize * 2, 20),
+                      color: strokeColor,
+                    }}
+                  />
+                </div>
+                <button
+                  onClick={() => setPenSize(Math.min(50, penSize + 1))}
+                  className="p-1 rounded text-text-muted hover:text-text-primary"
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+            )}
+
+            {!currentPen?.isEraser && !currentPen?.isLasso && (
+              <div className="flex shrink-0 items-center gap-1.5 pr-1">
+                {strokeColors.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    onClick={() => setStrokeColor(color)}
+                    className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${
+                      strokeColor === color
+                        ? "border-accent scale-110"
+                        : "border-transparent"
+                    }`}
+                    style={{ backgroundColor: color }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Row 2 (mobile) for keyboard/editing mode: text formatting controls */}
+        {showTextToolbar && (
+          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+            <div className="flex shrink-0 items-center gap-0.5 border-r border-border pr-2 sm:pr-3">
+              {[
+                {
+                  cmd: "bold",
+                  active: selState.bold,
+                  Icon: Bold,
+                  label: "Bold",
+                },
+                {
+                  cmd: "italic",
+                  active: selState.italic,
+                  Icon: Italic,
+                  label: "Italic",
+                },
+                {
+                  cmd: "underline",
+                  active: selState.underline,
+                  Icon: Underline,
+                  label: "Underline",
+                },
+                {
+                  cmd: "strikeThrough",
+                  active: selState.strike,
+                  Icon: Strikethrough,
+                  label: "Strikethrough",
+                },
+              ].map(({ cmd, active, label }) => (
+                <button
+                  key={cmd}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    toggleFormat(cmd);
+                  }}
+                  title={label}
+                  className={`p-2 rounded-lg transition-colors ${
+                    active
+                      ? "bg-accent/20 text-accent"
+                      : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
+                  }`}
+                >
+                  {cmd === "bold" && <Bold size={18} />}
+                  {cmd === "italic" && <Italic size={18} />}
+                  {cmd === "underline" && <Underline size={18} />}
+                  {cmd === "strikethrough" && <Strikethrough size={18} />}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex shrink-0 items-center gap-0.5 border-r border-border pr-2 sm:pr-3">
+              {["small", "medium", "large"].map((tier) => (
+                <button
+                  key={tier}
+                  type="button"
+                  onClick={() => setTextSize(tier)}
+                  title={`${tier.charAt(0).toUpperCase() + tier.slice(1)} text`}
+                  className={`px-2 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                    textSize === tier
+                      ? "bg-accent/20 text-accent"
+                      : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
+                  }`}
+                >
+                  {tier === "small" ? "S" : tier === "medium" ? "M" : "L"}
+                </button>
+              ))}
+            </div>
+
             <div className="flex shrink-0 items-center gap-1.5 pr-1">
-              {strokeColors.map((color) => (
+              {PEN_COLORS.map((color) => (
                 <button
                   key={color}
                   type="button"
-                  onClick={() => setStrokeColor(color)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    execCmd("foreColor", color);
+                  }}
                   className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${
-                    strokeColor === color
+                    rgbToHex(selState.color) === color
                       ? "border-accent scale-110"
                       : "border-transparent"
                   }`}
@@ -513,96 +641,13 @@ export default function Toolbar({ noteId: noteIdProp } = {}) {
                 />
               ))}
             </div>
-          )}
-        </div>
-      )}
-
-      {/* Row 2 (mobile) for keyboard/editing mode: text formatting controls */}
-      {showTextToolbar && (
-        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
-          <div className="flex shrink-0 items-center gap-0.5 border-r border-border pr-2 sm:pr-3">
-            {[
-              { cmd: "bold", active: selState.bold, Icon: Bold, label: "Bold" },
-              {
-                cmd: "italic",
-                active: selState.italic,
-                Icon: Italic,
-                label: "Italic",
-              },
-              {
-                cmd: "underline",
-                active: selState.underline,
-                Icon: Underline,
-                label: "Underline",
-              },
-              {
-                cmd: "strikeThrough",
-                active: selState.strike,
-                Icon: Strikethrough,
-                label: "Strikethrough",
-              },
-            ].map(({ cmd, active, Icon, label }) => (
-              <button
-                key={cmd}
-                type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  toggleFormat(cmd);
-                }}
-                title={label}
-                className={`p-2 rounded-lg transition-colors ${
-                  active
-                    ? "bg-accent/20 text-accent"
-                    : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
-                }`}
-              >
-                <Icon size={18} />
-              </button>
-            ))}
           </div>
+        )}
 
-          <div className="flex shrink-0 items-center gap-0.5 border-r border-border pr-2 sm:pr-3">
-            {["small", "medium", "large"].map((tier) => (
-              <button
-                key={tier}
-                type="button"
-                onClick={() => setTextSize(tier)}
-                title={`${tier.charAt(0).toUpperCase() + tier.slice(1)} text`}
-                className={`px-2 py-1 rounded-lg text-xs font-semibold transition-colors ${
-                  textSize === tier
-                    ? "bg-accent/20 text-accent"
-                    : "text-text-secondary hover:bg-surface-lighter hover:text-text-primary"
-                }`}
-              >
-                {tier === "small" ? "S" : tier === "medium" ? "M" : "L"}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex shrink-0 items-center gap-1.5 pr-1">
-            {PEN_COLORS.map((color) => (
-              <button
-                key={color}
-                type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  execCmd("foreColor", color);
-                }}
-                className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${
-                  rgbToHex(selState.color) === color
-                    ? "border-accent scale-110"
-                    : "border-transparent"
-                }`}
-                style={{ backgroundColor: color }}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {splitPickerOpen && (
-        <PickSecondNoteDialog onClose={() => setSplitPickerOpen(false)} />
-      )}
-    </div>
+        {splitPickerOpen && (
+          <PickSecondNoteDialog onClose={() => setSplitPickerOpen(false)} />
+        )}
+      </div>
+    </>
   );
 }

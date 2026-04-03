@@ -67,6 +67,7 @@ export default function ImageEmbedsLayer({ embeds, minHeight, isKeyboard }) {
           >
             <div
               style={{
+                position: 'relative',
                 width: e.width,
                 height: e.height,
                 overflow: 'hidden',

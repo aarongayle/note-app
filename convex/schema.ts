@@ -92,7 +92,19 @@ export default defineSchema({
     /** @deprecated — now stored in localStorage per device */
     zoom: v.optional(v.number()),
     updatedAt: v.optional(v.number()),
+    lastTranscribedAt: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     .index("by_user_clientId", ["userId", "clientId"]),
+  transcriptions: defineTable({
+    noteId: v.id("noteItems"),
+    text: v.string(),
+    startY: v.number(),
+    endY: v.number(),
+  })
+    .index("by_note", ["noteId"])
+    .searchIndex("search_text", {
+      searchField: "text",
+      filterFields: ["noteId"],
+    }),
 });
